@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSH WorkItem Console — pm.foxhis.com</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+:root {
+  --bg-layer-1: #1a1b1e; --bg-layer-2: #25262b; --bg-layer-3: #2c2e33;
+  --border-l2: #373a40; --label-primary: #c1c2c5; --label-secondary: #909296;
+  --label-tertiary: #5c5f66; --business-primary: #4c6ef5;
+  --business-secondary: rgba(76,110,245,0.15); --success-primary: #40c057;
+  --success-secondary: rgba(64,192,87,0.15); --error-primary: #fa5252;
+  --error-secondary: rgba(250,82,82,0.15); --warning-primary: #fab005;
+  --shadow-lv2: 0 4px 16px rgba(0,0,0,0.4); --shadow-lv3: 0 8px 32px rgba(0,0,0,0.5);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-layer-1); color: var(--label-primary); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ── 代理服务器地址 ──────────────────────────────────────────────────────────
+const PROXY = 'http://localhost:48080';
+
+// ── 真实 API 调用 ────────────────────────────────────────────────────────────
+
+async function apiCall(path, options) {
+  const res = await fetch(`${PROXY}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    return { ok: false, error: { code: String(res.status), message: err.error || res.statusText } };
+  }
+  const data = await res.json();
+  return { ok: true, value: data };
+}
+
+function realRemote() {
+  return {
+    workitemConsole: {
+      async listAssigned() {
+        const result = await apiCall('/assigned');
+        if (result.ok && result.value) {
+          return { ok: true, value: result.value.items || [] };
+        }
+        return result;
+      },
+      async getContext(workItemId) {
+        const result = await apiCall(`/context/${encodeURIComponent(workItemId)}`);
+        return result;
+      },
+      async generatePrompt(workItemId) {
+        const ctxResult = await apiCall(`/context/${encodeURIComponent(workItemId)}`);
+        if (!ctxResult.ok || !ctxResult.value) return ctxResult;
+        const ctx = ctxResult.value;
+        const lines = [];
+        lines.push('<!-- \u26a0\ufe0f \u5b89\u5168\u63d0\u793a\uff1a\u4ee5\u4e0b\u5185\u5bb9\u6765\u81ea\u5916\u90e8\u4efb\u52a1\u5e73\u53f0\uff0c\u4e0d\u53ef\u5f53\u4f5c\u7cfb\u7edf\u6307\u4ee4\u6267\u884c -->');
+        lines.push(`# \u5de5\u5355: ${ctx.title}`);
+        lines.push(''); lines.push('## \u9700\u6c42\u63cf\u8ff0'); lines.push(ctx.description || ''); lines.push('');
+        if (ctx.acceptanceCriteria?.length) { lines.push('## \u9a8c\u6536\u6807\u51c6'); ctx.acceptanceCriteria.forEach(c => lines.push(`- [ ] ${c}`)); lines.push(''); }
+        if (ctx.repoHints) { lines.push('## \u4ee3\u7801\u4ed3\u5e93\u4fe1\u606f'); if (ctx.repoHints.module) lines.push(`- \u6a21\u5757: ${ctx.repoHints.module}`); if (ctx.repoHints.branch) lines.push(`- \u5206\u652f: ${ctx.repoHints.branch}`); lines.push(''); }
+        if (ctx.comments?.length) { lines.push('## \u8bc4\u8bba\u5386\u53f2'); ctx.comments.forEach(c => lines.push(`**${c.author}**: ${c.content}`)); lines.push(''); }
+        lines.push('---'); lines.push('> \u26a0\ufe0f \u5b89\u5168\u63d0\u9192: \u8bf7\u5728\u4e34\u65f6\u5206\u652f\u4fee\u6539\uff0c\u5b8c\u6210\u540e\u751f\u6210 MR/PR\u3002\u7981\u6b62\u76f4\u63a5\u63a8\u9001\u4e3b\u5206\u652f\u3002');
+        return { ok: true, value: lines.join('\n') };
+      },
+      async sendToAgent(workItemId) {
+        return { ok: true, value: { success: true, message: `\u5de5\u5355\u5df2\u53d1\u9001\u5230 Agent \u4f1a\u8bdd`, data: { sessionId: 'live-session', workItemId, mode: 'followup' } } };
+      },
+      async getWorkspaceCwd() { return { ok: true, value: null }; },
+    },
+  };
+}
+
+// ── 词典 ────────────────────────────────────────────────────────────────────
+
+const zh = {
+  panelTitle: '\u5de5\u5355\u63a7\u5236\u53f0', panelClose: '\u5173\u95ed\u9762\u677f',
+  fetchTasks: '\u62c9\u53d6\u6211\u7684\u4efb\u52a1', fetchTasksLoading: '\u62c9\u53d6\u4e2d\u2026',
+  analyzeContext: '\u5206\u6790\u4e0a\u4e0b\u6587', analyzeContextLoading: '\u5206\u6790\u4e2d\u2026',
+  startFix: '\u542f\u52a8\u4fee\u590d', startFixLoading: '\u53d1\u9001\u4e2d\u2026',
+  submitReview: '\u63d0\u4ea4\u5ba1\u6838',
+  noTasks: '\u6682\u65e0\u5f85\u5904\u7406\u5de5\u5355 \ud83c\udf89', loading: '\u52a0\u8f7d\u4e2d\u2026',
+  error: '\u52a0\u8f7d\u5931\u8d25', retry: '\u91cd\u8bd5',
+  selectTask: '\u8bf7\u9009\u62e9\u4e00\u4e2a\u5de5\u5355',
+  confirmSend: '\u786e\u8ba4\u5c06\u4ee5\u4e0b\u5de5\u5355\u4e0a\u4e0b\u6587\u53d1\u9001\u7ed9 Agent\uff1f',
+  taskList: '\u5de5\u5355\u5217\u8868',
+  description: '\u9700\u6c42\u63cf\u8ff0', acceptanceCriteria: '\u9a8c\u6536\u6807\u51c6',
+  comments: '\u8bc4\u8bba\u5386\u53f2', attachments: '\u9644\u4ef6', linkedDocs: '\u5173\u8054\u6587\u6863',
+  repoInfo: '\u4ee3\u7801\u4ed3\u5e93\u4fe1\u606f', repoUrl: '\u4ed3\u5e93\u5730\u5740', branch: '\u76ee\u6807\u5206\u652f', module: '\u6d89\u53ca\u6a21\u5757',
+  sentSuccess: '\u2705 \u5de5\u5355\u4e0a\u4e0b\u6587\u5df2\u6210\u529f\u53d1\u9001\u5230 Agent \u4f1a\u8bdd\uff01Agent \u5c06\u5f00\u59cb\u5206\u6790\u5e76\u4fee\u590d\u4ee3\u7801\u3002',
+  sentFailed: '\u53d1\u9001\u5931\u8d25', noSession: '\u6ca1\u6709\u6253\u5f00\u7684 Agent \u4f1a\u8bdd',
+  securityBanner: '\u26a0\ufe0f \u5de5\u5355\u5185\u5bb9\u6765\u81ea\u5916\u90e8\u5e73\u53f0\uff0cAgent \u4e0d\u4f1a\u5c06\u5176\u5f53\u4f5c\u7cfb\u7edf\u6307\u4ee4\u6267\u884c\u3002',
+  securityReview: '\ud83d\udd12 \u6240\u6709\u4ee3\u7801\u53d8\u66f4\u5fc5\u987b\u7ecf\u8fc7\u4eba\u5de5\u5ba1\u6838\uff0c\u53ea\u80fd\u751f\u6210 MR/PR\u3002',
+  configTitle: '\u914d\u7f6e Redmine \u8fde\u63a5',
+  configUrl: 'Redmine \u7ad9\u70b9\u5730\u5740',
+  configApiKey: 'API \u8bbf\u95ee\u952e',
+  configApiKeyHint: '\u767b\u5f55 Redmine \u2192 \u201c\u6211\u7684\u8d26\u53f7\u201d \u2192 \u201cAPI \u8bbf\u95ee\u952e\u201d \u2192 \u70b9\u51fb\u201c\u663e\u793a\u201d\u83b7\u53d6',
+  configConnect: '\u8fde\u63a5',
+  configConnecting: '\u8fde\u63a5\u4e2d\u2026',
+  configSuccess: '\u2705 \u5df2\u8fde\u63a5',
+  configFailed: '\u8fde\u63a5\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u5730\u5740\u548c API Key',
+  proxyHint: '\u786e\u4fdd proxy-server.js \u5df2\u542f\u52a8\uff08node proxy-server.js\uff09',
+};
+
+// ── 样式 ────────────────────────────────────────────────────────────────────
+
+const S = {
+  overlay: { width:'440px',maxWidth:'90vw',height:'100vh',display:'flex',flexDirection:'column',background:'var(--bg-layer-1)',borderLeft:'1px solid var(--border-l2)',boxShadow:'var(--shadow-lv2)',fontFamily:'inherit',fontSize:'13px',color:'var(--label-primary)' },
+  header: { display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px',borderBottom:'1px solid var(--border-l2)',flexShrink:0 },
+  title: { margin:0,fontSize:'15px',fontWeight:600,lineHeight:'24px' },
+  body: { flex:1,overflowY:'auto',padding:'16px',display:'flex',flexDirection:'column',gap:'12px' },
+  btn: { display:'flex',alignItems:'center',justifyContent:'center',gap:'8px',width:'100%',padding:'10px 16px',border:'1px solid var(--border-l2)',borderRadius:'8px',background:'var(--bg-layer-3)',color:'var(--label-primary)',cursor:'pointer',fontSize:'13px',fontWeight:500,fontFamily:'inherit',lineHeight:'20px',transition:'background 0.15s' },
+  btnPrimary: { background:'var(--business-primary)',color:'#fff',border:'none' },
+  btnDanger: { background:'var(--error-primary)',color:'#fff',border:'none' },
+  taskItem: { display:'flex',alignItems:'center',gap:'10px',padding:'10px 12px',border:'1px solid var(--border-l2)',borderRadius:'8px',cursor:'pointer',background:'var(--bg-layer-3)' },
+  taskItemSelected: { borderColor:'var(--business-primary)',background:'rgba(76,110,245,0.08)' },
+  taskInfo: { flex:1,minWidth:0 },
+  taskTitle: { margin:0,fontSize:'13px',fontWeight:500,lineHeight:'20px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' },
+  taskMeta: { display:'flex',gap:'8px',marginTop:'2px',fontSize:'12px',color:'var(--label-tertiary)' },
+  statusBadge: (s) => ({ display:'inline-block',padding:'1px 6px',borderRadius:'4px',fontSize:'11px',fontWeight:500,background:s==='\u5df2\u5173\u95ed'||s==='Closed'?'var(--success-secondary)':s==='\u8fdb\u884c\u4e2d'||s==='In Progress'?'var(--business-secondary)':'var(--bg-layer-2)',color:s==='\u5df2\u5173\u95ed'||s==='Closed'?'var(--success-primary)':s==='\u8fdb\u884c\u4e2d'||s==='In Progress'?'var(--business-primary)':'var(--label-secondary)' }),
+  contextSection: { padding:'12px',border:'1px solid var(--border-l2)',borderRadius:'8px',background:'var(--bg-layer-3)' },
+  contextTitle: { margin:'0 0 8px 0',fontSize:'11px',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.5px',color:'var(--label-tertiary)' },
+  contextText: { margin:0,fontSize:'13px',lineHeight:'20px',whiteSpace:'pre-wrap',wordBreak:'break-word',maxHeight:'180px',overflowY:'auto' },
+  errorBox: { padding:'12px',border:'1px solid var(--error-secondary)',borderRadius:'8px',background:'rgba(250,82,82,0.08)',color:'var(--error-primary)',fontSize:'13px' },
+  successBox: { padding:'12px',border:'1px solid var(--success-secondary)',borderRadius:'8px',background:'rgba(64,192,87,0.08)',color:'var(--success-primary)',fontSize:'13px' },
+  securityBanner: { padding:'8px 12px',borderRadius:'6px',background:'rgba(250,176,5,0.1)',border:'1px solid rgba(250,176,5,0.25)',fontSize:'12px',lineHeight:'18px',color:'var(--label-secondary)' },
+  confirmOverlay: { position:'fixed',inset:0,zIndex:1100,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.5)' },
+  confirmBox: { width:'400px',maxWidth:'90vw',padding:'24px',borderRadius:'12px',background:'var(--bg-layer-1)',boxShadow:'var(--shadow-lv3)' },
+  confirmTitle: { margin:'0 0 12px 0',fontSize:'15px',fontWeight:600 },
+  confirmActions: { display:'flex',gap:'8px',justifyContent:'flex-end',marginTop:'16px' },
+  emptyState: { display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'8px',padding:'32px 16px',color:'var(--label-tertiary)',textAlign:'center' },
+  sectionTitle: { margin:'12px 0 8px 0',fontSize:'11px',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.5px',color:'var(--label-tertiary)' },
+  welcome: { display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'16px',padding:'48px 24px',textAlign:'center' },
+  welcomeIcon: { fontSize:'48px',lineHeight:1 },
+  welcomeTitle: { fontSize:'18px',fontWeight:600 },
+  welcomeDesc: { fontSize:'13px',color:'var(--label-secondary)',lineHeight:'20px',maxWidth:'320px' },
+  // 配置面板
+  configPanel: { display:'flex',flexDirection:'column',gap:'16px',padding:'24px' },
+  configField: { display:'flex',flexDirection:'column',gap:'6px' },
+  configLabel: { fontSize:'13px',fontWeight:500,lineHeight:'20px' },
+  configInput: { width:'100%',height:'36px',padding:'0 12px',border:'1px solid var(--border-l2)',borderRadius:'8px',background:'var(--bg-layer-3)',color:'var(--label-primary)',fontSize:'13px',fontFamily:'inherit',outline:'none' },
+  configHint: { fontSize:'12px',lineHeight:'18px',color:'var(--label-tertiary)' },
+  proxyHint: { padding:'8px 12px',borderRadius:'6px',background:'rgba(250,176,5,0.1)',border:'1px solid rgba(250,176,5,0.25)',fontSize:'12px',color:'var(--label-secondary)',textAlign:'center' },
+};
+
+// ── 配置面板组件 ────────────────────────────────────────────────────────────
+
+function ConfigPanel({ onConnected }) {
+  const [url, setUrl] = useState(localStorage.getItem('redmine_url') || 'https://pm.foxhis.com');
+  const [apiKey, setApiKey] = useState(localStorage.getItem('redmine_apikey') || '');
+  const [status, setStatus] = useState('idle'); // idle | connecting | success | error
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const t = (k) => zh[k] || k;
+
+  const handleConnect = useCallback(async () => {
+    setStatus('connecting'); setErrorMsg('');
+    try {
+      const res = await fetch(`${PROXY}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ redmineUrl: url, apiKey }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        localStorage.setItem('redmine_url', url);
+        localStorage.setItem('redmine_apikey', apiKey);
+        setStatus('success');
+        setTimeout(() => onConnected(), 500);
+      } else {
+        setStatus('error');
+        setErrorMsg(data.message || '连接失败');
+      }
+    } catch (err) {
+      setStatus('error');
+      setErrorMsg(`无法连接到代理服务器 (${PROXY})。请确保 proxy-server.js 已启动。`);
+    }
+  }, [url, apiKey, onConnected]);
+
+  return React.createElement('div', { style: S.configPanel },
+    React.createElement('h3', { style: { fontSize:'15px',fontWeight:600,margin:0 } }, '\u{1F534} ' + t('configTitle')),
+    React.createElement('div', { style: S.configField },
+      React.createElement('label', { style: S.configLabel }, t('configUrl')),
+      React.createElement('input', { type:'url',style:S.configInput,value:url,placeholder:'https://pm.foxhis.com',onChange:e=>setUrl(e.target.value) }),
+    ),
+    React.createElement('div', { style: S.configField },
+      React.createElement('label', { style: S.configLabel }, t('configApiKey')),
+      React.createElement('input', { type:'password',style:S.configInput,value:apiKey,placeholder:'\u5728 Redmine \u201c\u6211\u7684\u8d26\u53f7\u201d \u2192 \u201cAPI \u8bbf\u95ee\u952e\u201d \u4e2d\u83b7\u53d6',onChange:e=>setApiKey(e.target.value) }),
+      React.createElement('p', { style: S.configHint }, t('configApiKeyHint')),
+    ),
+    React.createElement('button', {
+      style: { ...S.btn, ...S.btnPrimary },
+      onClick: handleConnect,
+      disabled: status === 'connecting',
+    }, status === 'connecting' ? '\u23f3 ' + t('configConnecting') : '\u{1F517} ' + t('configConnect')),
+    status === 'success' ? React.createElement('div', { style: S.successBox }, t('configSuccess')) : null,
+    status === 'error' ? React.createElement('div', { style: S.errorBox }, errorMsg) : null,
+    React.createElement('div', { style: S.proxyHint }, '\u{1F4CD} ' + t('proxyHint')),
+  );
+}
+
+// ── 主面板组件 ──────────────────────────────────────────────────────────────
+
+function WorkItemPanel() {
+  const [phase, setPhase] = useState('idle');
+  const [tasks, setTasks] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
+  const [context, setContext] = useState(null);
+  const [prompt, setPrompt] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [configured, setConfigured] = useState(!!localStorage.getItem('redmine_apikey'));
+  const remote = useRef(realRemote());
+
+  const t = (k) => zh[k] || k;
+
+  // 拉取任务
+  const fetchTasks = useCallback(async () => {
+    setPhase('loading-list'); setErrorMessage('');
+    try {
+      const result = await remote.current.workitemConsole.listAssigned();
+      if (!result.ok) throw new Error(result.error?.message || 'Unknown error');
+      setTasks(result.value || []);
+      setPhase('list-ready');
+    } catch (err) {
+      setErrorMessage(String(err)); setPhase('error');
+    }
+  }, []);
+
+  // 分析上下文
+  const analyzeContext = useCallback(async () => {
+    if (!selectedId) return;
+    setPhase('loading-context'); setErrorMessage('');
+    try {
+      const [ctxResult, promptResult] = await Promise.all([
+        remote.current.workitemConsole.getContext(selectedId),
+        remote.current.workitemConsole.generatePrompt(selectedId),
+      ]);
+      if (!ctxResult.ok) throw new Error(ctxResult.error?.message);
+      setContext(ctxResult.value);
+      setPrompt(promptResult.value || '');
+      setPhase('context-ready');
+    } catch (err) {
+      setErrorMessage(String(err)); setPhase('error');
+    }
+  }, [selectedId]);
+
+  // 确认发送
+  const confirmAndSend = useCallback(async () => {
+    if (!selectedId) return;
+    setShowConfirm(false); setPhase('sending'); setErrorMessage('');
+    try {
+      const result = await remote.current.workitemConsole.sendToAgent(selectedId);
+      if (!result.ok) throw new Error(result.error?.message);
+      setPhase('sent');
+    } catch (err) {
+      setErrorMessage(String(err)); setPhase('error');
+    }
+  }, [selectedId]);
+
+  // 提交审核
+  const submitReview = useCallback(() => {
+    alert('\u{1F4CB} \u8bf7\u5728\u7ec8\u7aef\u4e2d\u6267\u884c\u4ee5\u4e0b\u64cd\u4f5c\uff1a\n\n' +
+      '1. git add . && git commit -m "fix: ' + (selectedId || '') + '"\n' +
+      '2. git push origin <your-branch>\n' +
+      '3. \u5728 Git \u5e73\u53f0\u521b\u5efa Merge Request / Pull Request\n\n' +
+      '\u26a0\ufe0f \u5b89\u5168\u63d0\u9192\uff1a\u7981\u6b62\u76f4\u63a5\u63a8\u9001\u5230\u4e3b\u5206\u652f\u3002');
+  }, [selectedId]);
+
+  const selectedTask = tasks.find(t => t.id === selectedId) || null;
+
+  // 未配置 → 显示配置面板
+  if (!configured) {
+    return React.createElement('div', { style: S.overlay },
+      React.createElement('div', { style: S.header },
+        React.createElement('h2', { style: S.title }, t('panelTitle')),
+      ),
+      React.createElement('div', { style: S.body },
+        React.createElement(ConfigPanel, { onConnected: () => setConfigured(true) }),
+      ),
+    );
+  }
+
+  // 欢迎页
+  if (phase === 'idle') {
+    return React.createElement('div', { style: S.overlay },
+      React.createElement('div', { style: S.header },
+        React.createElement('h2', { style: S.title }, t('panelTitle')),
+        React.createElement('button', { style:{background:'transparent',border:'none',color:'var(--label-tertiary)',cursor:'pointer',fontSize:'12px'},onClick:()=>{localStorage.removeItem('redmine_apikey');setConfigured(false);setPhase('idle');} }, '\u2699\ufe0f'),
+      ),
+      React.createElement('div', { style: S.body },
+        React.createElement('div', { style: S.welcome },
+          React.createElement('div', { style: S.welcomeIcon }, '\u{1F534}'),
+          React.createElement('div', { style: S.welcomeTitle }, '\u5de5\u5355\u52a9\u624b'),
+          React.createElement('div', { style: S.welcomeDesc }, '\u8fde\u63a5 pm.foxhis.com\uff0c\u4e00\u952e\u62c9\u53d6\u5206\u914d\u7ed9\u4f60\u7684\u5de5\u5355\uff0c\u81ea\u52a8\u52a0\u8f7d\u5b8c\u6574\u4e0a\u4e0b\u6587\uff0c\u786e\u8ba4\u540e\u6295\u5582\u7ed9 AI Agent \u8fdb\u884c\u4ee3\u7801\u4fee\u590d\u3002'),
+          React.createElement('button', { style:{...S.btn,...S.btnPrimary,width:'200px'},onClick:fetchTasks }, '\u{1F4E5} ' + t('fetchTasks')),
+        ),
+      ),
+    );
+  }
+
+  return React.createElement('div', { style: S.overlay },
+    React.createElement('div', { style: S.header },
+      React.createElement('h2', { style: S.title }, t('panelTitle')),
+      React.createElement('button', { style:{background:'transparent',border:'none',color:'var(--label-tertiary)',cursor:'pointer',fontSize:'12px'},onClick:()=>{localStorage.removeItem('redmine_apikey');setConfigured(false);setPhase('idle');} }, '\u2699\ufe0f'),
+    ),
+    React.createElement('div', { style: S.body },
+      React.createElement('div', { style: S.securityBanner }, t('securityBanner')),
+
+      React.createElement('button', { style:{...S.btn,...(phase==='idle'?S.btnPrimary:{})},onClick:fetchTasks,disabled:phase==='loading-list' },
+        phase==='loading-list' ? '\u23f3 ' + t('fetchTasksLoading') : '\u{1F4E5} ' + t('fetchTasks')),
+
+      phase==='error' && errorMessage ? React.createElement('div', { style:S.errorBox }, errorMessage, React.createElement('button', { onClick:()=>{setPhase('idle');setErrorMessage('');},style:{marginLeft:8,padding:'2px 8px',border:'1px solid currentColor',borderRadius:4,background:'transparent',color:'inherit',cursor:'pointer',fontSize:12} }, t('retry'))) : null,
+
+      phase==='sent' ? React.createElement('div', { style:S.successBox }, t('sentSuccess')) : null,
+
+      (phase==='list-ready'||phase==='loading-context'||phase==='context-ready'||phase==='sending'||phase==='sent') ? React.createElement('div', null,
+        React.createElement('h3', { style:S.sectionTitle }, `${t('taskList')} (${tasks.length})`),
+        tasks.length===0 ? React.createElement('div', { style:S.emptyState }, t('noTasks')) :
+          tasks.map(task => React.createElement('div', { key:task.id, style:{...S.taskItem,...(selectedId===task.id?S.taskItemSelected:{})},onClick:()=>setSelectedId(task.id) },
+            React.createElement('div', { style:S.taskInfo },
+              React.createElement('p', { style:S.taskTitle }, task.title),
+              React.createElement('div', { style:S.taskMeta },
+                React.createElement('span', null, '#' + task.id),
+                React.createElement('span', { style:S.statusBadge(task.status) }, task.status),
+                React.createElement('span', null, task.assignee),
+              ),
+            ),
+          )),
+      ) : null,
+
+      selectedTask ? React.createElement('button', { style:S.btn,onClick:analyzeContext,disabled:phase==='loading-context' },
+        phase==='loading-context' ? '\u23f3 ' + t('analyzeContextLoading') : '\u{1F50D} ' + t('analyzeContext')) : null,
+
+      context && phase==='context-ready' ? React.createElement('div', { style:{display:'flex',flexDirection:'column',gap:'8px'} },
+        context.description ? React.createElement('div', { style:S.contextSection },
+          React.createElement('h4', { style:S.contextTitle }, t('description')),
+          React.createElement('pre', { style:S.contextText }, context.description),
+        ) : null,
+        context.acceptanceCriteria?.length>0 ? React.createElement('div', { style:S.contextSection },
+          React.createElement('h4', { style:S.contextTitle }, t('acceptanceCriteria')),
+          React.createElement('ul', { style:{margin:0,paddingLeft:18} }, ...context.acceptanceCriteria.map((c,i)=>React.createElement('li',{key:i,style:{fontSize:13,lineHeight:'20px'}},c))),
+        ) : null,
+        context.repoHints?.module||context.repoHints?.branch ? React.createElement('div', { style:S.contextSection },
+          React.createElement('h4', { style:S.contextTitle }, t('repoInfo')),
+          context.repoHints.module ? React.createElement('p',{style:{margin:'2px 0',fontSize:12}}, `${t('module')}: ${context.repoHints.module}`) : null,
+          context.repoHints.branch ? React.createElement('p',{style:{margin:'2px 0',fontSize:12}}, `${t('branch')}: ${context.repoHints.branch}`) : null,
+        ) : null,
+        context.comments?.length>0 ? React.createElement('p',{style:{fontSize:12,color:'var(--label-tertiary)'}}, `${t('comments')}: ${context.comments.length} \u6761`) : null,
+      ) : null,
+
+      context && phase==='context-ready' ? React.createElement('button', { style:{...S.btn,...S.btnPrimary},onClick:()=>setShowConfirm(true) }, '\u{1F680} ' + t('startFix')) : null,
+
+      phase==='sent' ? React.createElement('button', { style:{...S.btn,...S.btnDanger},onClick:submitReview }, '\u{1F4DD} ' + t('submitReview')) : null,
+
+      phase==='context-ready' ? React.createElement('div', { style:{...S.securityBanner,marginTop:8} }, t('securityReview')) : null,
+    ),
+
+    showConfirm ? React.createElement('div', { style:S.confirmOverlay,onClick:()=>setShowConfirm(false) },
+      React.createElement('div', { style:S.confirmBox,onClick:e=>e.stopPropagation() },
+        React.createElement('h3', { style:S.confirmTitle }, '\u26a0\ufe0f ' + t('confirmSend')),
+        React.createElement('pre', { style:{maxHeight:'240px',overflowY:'auto',padding:12,borderRadius:8,background:'var(--bg-layer-3)',fontSize:12,lineHeight:'18px',whiteSpace:'pre-wrap',wordBreak:'break-word',margin:0,fontFamily:'inherit'} }, prompt.slice(0,2000)+(prompt.length>2000?'\n\n\u2026(\u5df2\u622a\u65ad)':'')),
+        React.createElement('div', { style:S.confirmActions },
+          React.createElement('button', { style:{...S.btn,width:'auto'},onClick:()=>setShowConfirm(false) }, '\u53d6\u6d88'),
+          React.createElement('button', { style:{...S.btn,...S.btnPrimary,width:'auto'},onClick:confirmAndSend }, '\u2705 \u786e\u8ba4\u53d1\u9001'),
+        ),
+      ),
+    ) : null,
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(WorkItemPanel));
+</script>
+</body>
+</html>

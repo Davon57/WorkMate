@@ -1,0 +1,26 @@
+# DSH WorkItem Console — Cordis 插件注册配置
+#
+# 将此文件合并到 Profile 的 Cordis 组合中即可启用插件。
+# 示例：在 agent.cordis.yml 或 web.cordis.yml 中添加。
+#
+# Host 服务注册（Agent 平面）：
+# - id: workitem-console
+#   name: '@deepseek-ai/dsh-workitem-console'
+#   isolate: true
+#
+# Client 前端注册（Web 平面）：
+#   "@deepseek-ai/dsh-client-ui-workitem-console" 通过 package.json 的
+#   dsh.client.inject 字段声明依赖，由 Cordis Loader 自动加载。
+
+# ── Host 服务 ──────────────────────────────────────────────────────────────
+
+# WorkitemConsoleGateway 需要访问 Agent 注册表和 Session 服务，
+# 这些是 Host 平面的单例，因此服务本身也在 Host 平面注册。
+# 使用 isolate: true 确保每个 Agent 获得独立的服务实例。
+- id: workitem-console
+  name: '@deepseek-ai/dsh-workitem-console'
+  isolate: true
+  config:
+    # 适配器地址通过环境变量 DSH_WORKITEM_ADAPTER_URL 配置，
+    # 也可以在运行时通过设置页面动态修改。
+    # 此处不设默认值，由环境变量提供。
