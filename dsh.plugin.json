@@ -1,0 +1,12 @@
+{
+  "name": "agent-console",
+  "description": "Agent Console：DSH 多任务并行调度与子 Agent 编排系统",
+  "version": "0.3.0",
+  "entry": {
+    "name": "agent-console",
+    "inject": []
+  },
+  "client": {
+    "platform": "web"
+  }
+}

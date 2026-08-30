@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": ".",
+    "paths": {
+      "@agent-console/types": ["./packages/types/src/index.ts"],
+      "@agent-console/host": ["./packages/host/src/index.ts"],
+      "@agent-console/client": ["./packages/client/src/index.ts"]
+    }
+  },
+  "references": [
+    { "path": "./packages/types" },
+    { "path": "./packages/host" },
+    { "path": "./packages/client" }
+  ],
+  "exclude": ["node_modules", "dist"]
+}
