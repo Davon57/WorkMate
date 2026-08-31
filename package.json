@@ -14,6 +14,7 @@
     "lib/index.js",
     "lib/client.js",
     "packages/client/dist/**",
+    "skills/**",
     "cordis.patch.yml",
     "dsh.plugin.json",
     "README.md"
@@ -27,8 +28,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-client-ui-primitives",
-        "@deepseek-ai/dsh-client-locale",
-        "dsh-worktable"
+        "@deepseek-ai/dsh-client-locale"
       ]
     }
   },

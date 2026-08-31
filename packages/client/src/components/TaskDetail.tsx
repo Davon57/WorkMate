@@ -5,6 +5,8 @@
  */
 
 import React, { useCallback, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { api } from '../api'
 import { TASK_PHASES } from '@agent-console/types'
 import type { TaskContext, TaskPhase, SubAgent } from '@agent-console/types'
@@ -13,9 +15,11 @@ interface TaskDetailProps {
   task: TaskContext
   onClose: () => void
   onUpdated: () => void
+  isTaskListCollapsed: boolean
+  onToggleTaskList: () => void
 }
 
-export function TaskDetail({ task, onClose, onUpdated }: TaskDetailProps) {
+export function TaskDetail({ task, onClose, onUpdated, isTaskListCollapsed, onToggleTaskList }: TaskDetailProps) {
   const phaseConfig = TASK_PHASES[task.phase]
   const [summarizing, setSummarizing] = useState(false)
   const [summaryError, setSummaryError] = useState('')
@@ -70,8 +74,15 @@ export function TaskDetail({ task, onClose, onUpdated }: TaskDetailProps) {
     <div className="detail-panel">
       {/* 头部 */}
       <div className="detail-panel-header">
-        <span className="detail-panel-title">当前执行单元</span>
-        <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
+        <div className="detail-panel-heading">
+          <button type="button" className="detail-layout-toggle" onClick={onToggleTaskList}
+            aria-label={isTaskListCollapsed ? '展开工单列表' : '收起工单列表'}
+            title={isTaskListCollapsed ? '展开工单列表' : '收起工单列表'}>
+            {isTaskListCollapsed ? '›' : '‹'}
+          </button>
+          <span className="detail-panel-title">分析详情</span>
+        </div>
+        <button className="btn btn-ghost btn-sm" onClick={onClose} aria-label="关闭分析详情">✕</button>
       </div>
 
       <div className="detail-panel-body">
@@ -121,7 +132,7 @@ export function TaskDetail({ task, onClose, onUpdated }: TaskDetailProps) {
           <div className="detail-section-title">✨ 工单上下文总结</div>
           {task.analysis ? (
             <div className="task-analysis">
-              <div className="task-analysis-text">{task.analysis.summary}</div>
+              <MarkdownContent content={task.analysis.summary} />
               <div className="task-analysis-meta">由 {task.analysis.model} 生成 · 读取 {task.analysis.imageCount} 张图片</div>
             </div>
           ) : (
@@ -137,7 +148,7 @@ export function TaskDetail({ task, onClose, onUpdated }: TaskDetailProps) {
           <div className="detail-section-title">🔎 主 Agent 影响面分析</div>
           {task.impactAnalysis ? (
             <div className="task-analysis">
-              <div className="task-analysis-text">{task.impactAnalysis.summary}</div>
+              <MarkdownContent content={task.impactAnalysis.summary} />
               <div className="task-analysis-meta">
                 由 {task.impactAnalysis.model} 分析
                 {task.impactAnalysis.repository && ` · ${task.impactAnalysis.repository.branch ?? '未知分支'} · ${task.impactAnalysis.repository.recentCommitCount} 条近期提交 · ${task.impactAnalysis.repository.changedFileCount} 个当前改动`}
@@ -301,6 +312,10 @@ export function TaskDetail({ task, onClose, onUpdated }: TaskDetailProps) {
       </div>
     </div>
   )
+}
+
+function MarkdownContent({ content }: { content: string }) {
+  return <div className="markdown-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown></div>
 }
 
 function isImageAttachment(name: string, contentType?: string): boolean {

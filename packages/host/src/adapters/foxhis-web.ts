@@ -226,13 +226,33 @@ function parseIssueRows(html: string, assignee: string): AdapterTaskSummary[] {
 }
 
 function readIssueTitle(html: string): string {
-  const heading = /<h2\b[^>]*>([\s\S]*?)<\/h2>/i.exec(html)?.[1]
-  return toText(heading ?? '')
+  const subject = readDivByClass(html, 'subject')
+  const heading = /<h3\b[^>]*>([\s\S]*?)<\/h3>/i.exec(subject ?? '')?.[1]
+  return toText(heading ?? /<h2\b[^>]*>([\s\S]*?)<\/h2>/i.exec(html)?.[1] ?? '')
 }
 
 function readIssueDescription(html: string): string {
-  const description = /<div\b[^>]*class=(['"])[^'"]*\bdescription\b[^'"]*\1[^>]*>([\s\S]*?)<\/div>\s*<\/div>/i.exec(html)?.[2]
-  return toText(description ?? '')
+  const description = readDivByClass(html, 'description')
+  if (!description) return ''
+  return toText(readDivByClass(description, 'wiki') ?? '')
+}
+
+/** Extract a div by class while respecting nested divs. */
+function readDivByClass(html: string, className: string): string | undefined {
+  const escaped = className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const opening = new RegExp(`<div\\b[^>]*class=(['"])[^'"]*\\b${escaped}\\b[^'"]*\\1[^>]*>`, 'i').exec(html)
+  if (!opening || opening.index === undefined) return undefined
+  const contentStart = opening.index + opening[0].length
+  const tags = /<\/?div\b[^>]*>/gi
+  tags.lastIndex = contentStart
+  let depth = 1
+  let tag: RegExpExecArray | null
+  while ((tag = tags.exec(html))) {
+    if (/^<\/div/i.test(tag[0])) depth -= 1
+    else depth += 1
+    if (depth === 0) return html.slice(contentStart, tag.index)
+  }
+  return undefined
 }
 
 function readProjects(html: string): string[] {
@@ -245,23 +265,35 @@ function readParentId(html: string): string | undefined {
 }
 
 function readAttachments(html: string): TaskAttachment[] {
-  const attachments: TaskAttachment[] = []
-  const seen = new Set<string>()
+  const attachments = new Map<string, TaskAttachment & { download: boolean }>()
   const links = /<a\b[^>]*href=(['"])(\/attachments\/[^'"]+)\1[^>]*>([\s\S]*?)<\/a>/gi
   let match: RegExpExecArray | null
   while ((match = links.exec(html))) {
     const url = new URL(match[2], DEFAULT_BASE_URL).toString()
-    if (seen.has(url)) continue
-    seen.add(url)
-    const name = toText(match[3]) || decodeURIComponent(match[2].split('/').pop() ?? '附件')
+    const file = readAttachmentPath(new URL(url).pathname)
+    if (!file) continue
+    const name = toText(match[3]) || file.name
     const around = html.slice(Math.max(0, match.index - 180), Math.min(html.length, links.lastIndex + 240))
-    attachments.push({
+    const candidate = {
       name,
       url,
       size: /\(([^()]+(?:KB|MB|Bytes?))\)/i.exec(toText(around))?.[1],
-    })
+      download: file.download,
+    }
+    const existing = attachments.get(file.id)
+    if (!existing || (!file.download && existing.download)) attachments.set(file.id, candidate)
   }
-  return attachments
+  return [...attachments.values()].map(({ download: _download, ...attachment }) => attachment)
+}
+
+function readAttachmentPath(pathname: string): { id: string; name: string; download: boolean } | undefined {
+  const parts = pathname.split('/').filter(Boolean)
+  if (parts[0] !== 'attachments') return undefined
+  const download = parts[1] === 'download'
+  const idIndex = download ? 2 : 1
+  const id = parts[idIndex]
+  if (!/^\d+$/.test(id ?? '') || !parts[idIndex + 1]) return undefined
+  return { id, name: decodeURIComponent(parts.slice(idIndex + 1).join('/')), download }
 }
 
 /** 读取 Redmine/FoxHIS 的历史记录：文字评论和属性变更会被统一放入时间线。 */

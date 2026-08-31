@@ -4,14 +4,10 @@
 
 import React, { useState, useEffect, useCallback } from 'react'
 import { api } from './api'
-import { Sidebar } from './components/Sidebar'
 import { TaskOverview } from './components/TaskOverview'
 import { TaskDetail } from './components/TaskDetail'
-import { FoxhisSetupDialog } from './components/FoxhisSetupDialog'
-import { VisionModelSetupDialog } from './components/VisionModelSetupDialog'
+import { RepositorySetupDialog } from './components/RepositorySetupDialog'
 import type { TaskSummary, TaskContext, DashboardStats } from '@agent-console/types'
-
-const FOCUS_STATUSES = new Set(['新建', '重新做', '重开', '打开', '进行中'])
 
 export function App() {
   const [tasks, setTasks] = useState<TaskSummary[]>([])
@@ -20,8 +16,10 @@ export function App() {
   const [loading, setLoading] = useState(false)
   const [syncTime, setSyncTime] = useState<string>('')
   const [notice, setNotice] = useState('')
-  const [showFoxhisSetup, setShowFoxhisSetup] = useState(false)
-  const [showVisionSetup, setShowVisionSetup] = useState(false)
+  const [workspace, setWorkspace] = useState<{ name: string; repositoryPath: string; branch: string } | null>(null)
+  const [repositoryProject, setRepositoryProject] = useState<string | null>(null)
+  const [isTaskListCollapsed, setIsTaskListCollapsed] = useState(false)
+  const [repositories, setRepositories] = useState<Record<string, { sourceType: 'local' | 'remote'; source: string; repositoryPath: string }>>({})
 
   const refresh = useCallback(async () => {
     try {
@@ -35,10 +33,6 @@ export function App() {
       console.error('Refresh failed:', err)
     }
   }, [])
-
-  useEffect(() => {
-    refresh()
-  }, [refresh])
 
   const showNotice = useCallback((message: string) => {
     setNotice(message)
@@ -65,6 +59,24 @@ export function App() {
     }
   }, [refresh, showNotice])
 
+  // Host 会保留当前进程中的任务缓存。进入 WorkMate 时主动同步一次，
+  // 让 FoxHIS 列表中的最新标题覆盖旧版详情解析留下的错误标题。
+  useEffect(() => {
+    handleFetchTasks()
+  }, [handleFetchTasks])
+
+  // WorkMate 由宿主会话打开时，URL 会携带 sessionId。Host 使用它读取
+  // session.header.cwd，并自动把所在 Git 根目录设为影响分析仓库。
+  useEffect(() => {
+    const sessionId = new URLSearchParams(window.location.search).get('sessionId') ?? undefined
+    const workspaceName = new URLSearchParams(window.location.search).get('workspaceName') ?? undefined
+    api.getWorkspace(sessionId, workspaceName)
+      .then(current => setWorkspace(current))
+      .catch(error => console.warn('Current session workspace is unavailable:', error))
+  }, [])
+
+  useEffect(() => { api.getRepositories().then(result => setRepositories(result.repositories)).catch(() => {}) }, [])
+
   const handleSelectTask = useCallback(async (taskId: string) => {
     try {
       const task = await api.getTaskContext(taskId)
@@ -76,6 +88,7 @@ export function App() {
 
   const handleDeselectTask = useCallback(() => {
     setSelectedTask(null)
+    setIsTaskListCollapsed(false)
   }, [])
 
   const handleTaskUpdated = useCallback(() => {
@@ -86,18 +99,18 @@ export function App() {
   }, [refresh, selectedTask])
 
   return (
-    <div className="app-layout">
-      <Sidebar taskCount={tasks.filter(task => FOCUS_STATUSES.has(task.sourceStatus ?? '')).length} />
-
-      <div className="main-content">
+    <div className={`app-layout ${isTaskListCollapsed ? 'task-list-collapsed' : ''}`}>
+      <div className="main-content" aria-hidden={isTaskListCollapsed}>
         <div className="main-header">
           <div className="main-header-left">
-            <h1 className="main-header-title">任务总览</h1>
-            <span className="main-header-subtitle">
-              重点优先 · 可查看全部状态并按项目过滤
-            </span>
+            <h1 className="main-header-title">工单</h1>
           </div>
           <div className="main-header-right">
+            {workspace && (
+              <span className="workspace-badge" title={workspace.repositoryPath}>
+                ▣ {workspace.name}{workspace.branch ? ` · ${workspace.branch}` : ''}
+              </span>
+            )}
             <div className="sync-status">
               <span className="sync-dot" />
               <span>工单工作流 · {stats?.runningAgents ?? 0} 个子代理运行中</span>
@@ -107,12 +120,6 @@ export function App() {
                 刚刚同步 · {syncTime}
               </span>
             )}
-            <button className="btn btn-ghost" onClick={() => setShowFoxhisSetup(true)}>
-              ⚙ 配置 FoxHIS
-            </button>
-            <button className="btn btn-ghost" onClick={() => setShowVisionSetup(true)}>
-              ◉ 配置读图模型
-            </button>
             <button className="btn btn-primary" onClick={handleFetchTasks} disabled={loading}>
               {loading ? '⏳ 拉取中...' : '＋ 获取工单'}
             </button>
@@ -125,6 +132,7 @@ export function App() {
             stats={stats}
             selectedId={selectedTask?.id ?? null}
             onSelect={handleSelectTask}
+            onConfigureRepository={setRepositoryProject}
           />
         </div>
       </div>
@@ -134,27 +142,35 @@ export function App() {
           task={selectedTask}
           onClose={handleDeselectTask}
           onUpdated={handleTaskUpdated}
+          isTaskListCollapsed={isTaskListCollapsed}
+          onToggleTaskList={() => setIsTaskListCollapsed(current => !current)}
+        />
+      )}
+      {!selectedTask && (
+        <aside className="detail-panel detail-panel-empty">
+          <div className="detail-panel-header">
+            <span className="detail-panel-title">分析详情</span>
+          </div>
+          <div className="empty-analysis-content">
+            <div className="empty-analysis-icon">⌕</div>
+            <strong>选择一项工单</strong>
+            <p>详情、附件与 Agent 影响分析将在这里显示。</p>
+          </div>
+        </aside>
+      )}
+      {repositoryProject && (
+        <RepositorySetupDialog
+          project={repositoryProject}
+          initial={repositories[repositoryProject]}
+          onClose={() => setRepositoryProject(null)}
+          onConfigured={repositoryPath => {
+            setRepositories(current => ({ ...current, [repositoryProject]: { ...(current[repositoryProject] ?? { sourceType: 'local', source: repositoryPath }), repositoryPath } }))
+            setRepositoryProject(null)
+            showNotice(`已配置 ${repositoryProject} 的代码仓库`)
+          }}
         />
       )}
 
-      {showFoxhisSetup && (
-        <FoxhisSetupDialog
-          onClose={() => setShowFoxhisSetup(false)}
-          onConfigured={() => {
-            setShowFoxhisSetup(false)
-            handleFetchTasks()
-          }}
-        />
-      )}
-      {showVisionSetup && (
-        <VisionModelSetupDialog
-          onClose={() => setShowVisionSetup(false)}
-          onConfigured={model => {
-            setShowVisionSetup(false)
-            showNotice(`读图模型已配置：${model}`)
-          }}
-        />
-      )}
       {notice && <div className="app-toast" role="status">{notice}</div>}
     </div>
   )

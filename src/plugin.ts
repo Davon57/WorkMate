@@ -8,20 +8,29 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname as pathDirname, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PLUGIN_DIR = pathResolve(pathDirname(fileURLToPath(import.meta.url)), "..");
 const UI_DIST_DIR = pathResolve(PLUGIN_DIR, "packages", "client", "dist");
 const UI_ASSETS_DIR = pathResolve(UI_DIST_DIR, "assets");
+const FRONTEND_ANALYSIS_SKILL_PATH = pathResolve(PLUGIN_DIR, "skills", "analyze-frontend-issue", "SKILL.md");
 // dsh-host-webserver prefix routes must not end with a slash.
 const UI_BASE_PATH = "/api/agent-console/ui";
+const WORKMATE_DATA_DIR = pathResolve(process.env.USERPROFILE ?? PLUGIN_DIR, ".workmate");
+const REPOSITORY_CONFIG_FILE = pathResolve(WORKMATE_DATA_DIR, "repositories.json");
 // 本机 WorkMate 默认 FoxHIS 账号。环境变量仍可在不改源码时覆盖这些值。
 const DEFAULT_FOXHIS_CONFIG = {
   baseUrl: "https://pm.foxhis.com",
   username: "wfei@foxhis.local",
   password: "Wgfi250057_?_?",
+};
+// 本机默认读图模型。环境变量优先，便于临时替换而无需改源码。
+const DEFAULT_VISION_CONFIG = {
+  baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  model: "qwen-vl-max",
+  apiKey: "sk-54058583f8e04403ae015e840a74b1f5",
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -59,6 +68,83 @@ async function readJsonBody(req) {
   const text = Buffer.concat(chunks).toString("utf8");
   if (!text) return {};
   try { return JSON.parse(text); } catch { return {}; }
+}
+
+/**
+ * A new conversation has no Agent yet, so session.header.cwd is unavailable.
+ * The desktop host still records the active saved project's root here; use the
+ * newest valid entry as a fallback and validate it with Git before analysis.
+ */
+function readRecentWorkspaceRoot(workspaceName) {
+  const userProfile = process.env.USERPROFILE;
+  if (!userProfile) return undefined;
+  const directory = pathResolve(userProfile, ".codex", "ambient-suggestions");
+  if (!existsSync(directory)) return undefined;
+  try {
+    const candidates = readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => pathResolve(directory, entry.name, "ambient-suggestions.json"))
+      .filter((file) => existsSync(file))
+      .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs);
+    const normalizedName = workspaceName?.trim().toLocaleLowerCase();
+    for (const file of candidates) {
+      try {
+        const projectRoot = JSON.parse(readFileSync(file, "utf8"))?.projectRoot;
+        if (typeof projectRoot === "string" && existsSync(projectRoot) && statSync(projectRoot).isDirectory()) {
+          const projectName = projectRoot.split(/[\\/]/).filter(Boolean).pop()?.toLocaleLowerCase();
+          if (normalizedName && projectName !== normalizedName) continue;
+          return pathResolve(projectRoot);
+        }
+      } catch { /* ignore malformed or concurrently-updated entries */ }
+    }
+  } catch { /* workspace metadata is optional */ }
+  return undefined;
+}
+
+function readRepositoryConfigs() {
+  try {
+    const value = JSON.parse(readFileSync(REPOSITORY_CONFIG_FILE, "utf8"));
+    return value && typeof value === "object" ? value : {};
+  } catch { return {}; }
+}
+
+function saveRepositoryConfigs(configs) {
+  mkdirSync(WORKMATE_DATA_DIR, { recursive: true });
+  writeFileSync(REPOSITORY_CONFIG_FILE, `${JSON.stringify(configs, null, 2)}\n`, "utf8");
+}
+
+function resolveGitRoot(directory) {
+  return pathResolve(execFileSync("git", ["-C", directory, "rev-parse", "--show-toplevel"], {
+    encoding: "utf8", timeout: 10_000, windowsHide: true,
+  }).trim());
+}
+
+function configureProjectRepository(project, sourceType, source) {
+  const projectName = String(project ?? "").trim();
+  const value = String(source ?? "").trim();
+  if (!projectName || !value) throw new Error("请填写项目和仓库地址");
+  let repositoryPath;
+  if (sourceType === "remote") {
+    if (!/^(?:https?:\/\/|ssh:\/\/|git@)/i.test(value)) throw new Error("远程仓库地址必须是 HTTP(S) 或 SSH Git URL");
+    const safeName = projectName.replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "project";
+    const target = pathResolve(WORKMATE_DATA_DIR, "repositories", safeName);
+    mkdirSync(pathResolve(WORKMATE_DATA_DIR, "repositories"), { recursive: true });
+    if (!existsSync(target)) {
+      execFileSync("git", ["clone", "--depth", "100", value, target], { encoding: "utf8", timeout: 120_000, windowsHide: true });
+    } else {
+      resolveGitRoot(target);
+      execFileSync("git", ["-C", target, "fetch", "--all", "--prune"], { encoding: "utf8", timeout: 120_000, windowsHide: true });
+    }
+    repositoryPath = resolveGitRoot(target);
+  } else {
+    const absolutePath = pathResolve(value);
+    if (!existsSync(absolutePath) || !statSync(absolutePath).isDirectory()) throw new Error("本地仓库路径不存在或不是目录");
+    repositoryPath = resolveGitRoot(absolutePath);
+  }
+  const configs = readRepositoryConfigs();
+  configs[projectName] = { project: projectName, sourceType: sourceType === "remote" ? "remote" : "local", source: value, repositoryPath, updatedAt: new Date().toISOString() };
+  saveRepositoryConfigs(configs);
+  return configs[projectName];
 }
 
 function readQuery(req) {
@@ -397,6 +483,38 @@ function buildVisionPrompt(task) {
 const DEFAULT_BASE_URL = "https://pm.foxhis.com";
 const REQUEST_TIMEOUT_MS = 20_000;
 const PAGE_SIZE = 100;
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 800;
+
+/**
+ * Retry an async operation with exponential backoff for transient errors.
+ * Only retries on network/timeout errors (not HTTP 4xx/5xx responses).
+ */
+async function withRetry(fn, label, maxRetries = MAX_RETRIES) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      // Only retry on fetch/network errors, not on HTTP status errors
+      const msg = (err.message ?? "").toLowerCase();
+      const isTransient =
+        msg.includes("fetch failed") ||
+        msg.includes("timeout") ||
+        msg.includes("econnrefused") ||
+        msg.includes("enotfound") ||
+        msg.includes("econnreset") ||
+        msg.includes("socket") ||
+        msg.includes("network");
+      if (!isTransient || attempt >= maxRetries) throw err;
+      const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+      console.warn(`[foxhis] ${label} 第 ${attempt} 次重试（${delay}ms 后）: ${err.message}`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastError;
+}
 
 function createFoxhisWebAdapter(config) {
   if (!(config.username ?? "").trim() || !config.password) {
@@ -426,29 +544,31 @@ function createFoxhisWebAdapter(config) {
 
   async function signIn() {
     if (authenticated) return;
-    const loginPage = await request("/login");
-    if (!loginPage.ok) throw new Error(`无法打开 FoxHIS 登录页（HTTP ${loginPage.status}）`);
-    const loginHtml = await loginPage.text();
-    const form = new URLSearchParams({ username, password, login: "登录" });
-    const csrfToken = readInputValue(loginHtml, "authenticity_token");
-    if (csrfToken) form.set("authenticity_token", csrfToken);
-    const loginResponse = await request("/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: form.toString(),
-    });
-    if (loginResponse.status >= 300 && loginResponse.status < 400) {
-      const location = loginResponse.headers.get("location") ?? "";
-      if (!/\/login(?:[?#]|$)/.test(location)) { authenticated = true; return; }
-    }
-    const body = await loginResponse.text();
-    if (loginResponse.ok && !/登录名|Sign in with SSO/.test(body)) { authenticated = true; return; }
-    throw new Error("FoxHIS 登录失败，请检查登录名和密码");
+    await withRetry(async () => {
+      const loginPage = await request("/login");
+      if (!loginPage.ok) throw new Error(`无法打开 FoxHIS 登录页（HTTP ${loginPage.status}）`);
+      const loginHtml = await loginPage.text();
+      const form = new URLSearchParams({ username, password, login: "登录" });
+      const csrfToken = readInputValue(loginHtml, "authenticity_token");
+      if (csrfToken) form.set("authenticity_token", csrfToken);
+      const loginResponse = await request("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: form.toString(),
+      });
+      if (loginResponse.status >= 300 && loginResponse.status < 400) {
+        const location = loginResponse.headers.get("location") ?? "";
+        if (!/\/login(?:[?#]|$)/.test(location)) { authenticated = true; return; }
+      }
+      const body = await loginResponse.text();
+      if (loginResponse.ok && !/登录名|Sign in with SSO/.test(body)) { authenticated = true; return; }
+      throw new Error("FoxHIS 登录失败，请检查登录名和密码");
+    }, "登录");
   }
 
   async function getHtml(path) {
     await signIn();
-    const response = await request(path);
+    const response = await withRetry(() => request(path), `GET ${path}`);
     const location = response.headers.get("location") ?? "";
     if (response.status === 401 || /\/login(?:[?#]|$)/.test(location)) {
       authenticated = false;
@@ -576,25 +696,66 @@ function parseIssueRows(html, assignee) {
   return tasks;
 }
 
-function readIssueTitle(html) { return toText(/<h2\b[^>]*>([\s\S]*?)<\/h2>/i.exec(html)?.[1] ?? ""); }
-function readIssueDescription(html) { return toText(/<div\b[^>]*class=(['"])[^'"]*\bdescription\b[^'"]*\1[^>]*>([\s\S]*?)<\/div>\s*<\/div>/i.exec(html)?.[2] ?? ""); }
+function readIssueTitle(html) {
+  const subject = readDivByClass(html, "subject");
+  const heading = /<h3\b[^>]*>([\s\S]*?)<\/h3>/i.exec(subject ?? "")?.[1];
+  return toText(heading ?? /<h2\b[^>]*>([\s\S]*?)<\/h2>/i.exec(html)?.[1] ?? "");
+}
+
+function readIssueDescription(html) {
+  const description = readDivByClass(html, "description");
+  if (!description) return "";
+  const wiki = readDivByClass(description, "wiki");
+  return toText(wiki ?? "");
+}
+
+/** Extract a div by class while respecting nested divs. */
+function readDivByClass(html, className) {
+  const escaped = className.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const opening = new RegExp(`<div\\b[^>]*class=(['"])[^'"]*\\b${escaped}\\b[^'"]*\\1[^>]*>`, "i").exec(html);
+  if (!opening || opening.index === undefined) return undefined;
+  const contentStart = opening.index + opening[0].length;
+  const tags = /<\/?div\b[^>]*>/gi;
+  tags.lastIndex = contentStart;
+  let depth = 1;
+  let tag;
+  while ((tag = tags.exec(html))) {
+    if (/^<\/div/i.test(tag[0])) depth -= 1;
+    else depth += 1;
+    if (depth === 0) return html.slice(contentStart, tag.index);
+  }
+  return undefined;
+}
 function readProjects(html) { return compact([toText(/href=(['"])\/projects\/[^'"]+\1[^>]*>([\s\S]*?)<\/a>/i.exec(html)?.[2] ?? "")]); }
 function readParentId(html) { return /href=(['"])\/issues\/(\d+)\1/i.exec(html)?.[2]; }
 
 function readAttachments(html) {
-  const attachments = [];
-  const seen = new Set();
+  const attachments = new Map();
   const links = /<a\b[^>]*href=(['"])(\/attachments\/[^'"]+)\1[^>]*>([\s\S]*?)<\/a>/gi;
   let match;
   while ((match = links.exec(html))) {
     const url = new URL(match[2], DEFAULT_BASE_URL).toString();
-    if (seen.has(url)) continue;
-    seen.add(url);
-    const name = toText(match[3]) || decodeURIComponent(match[2].split("/").pop() ?? "附件");
+    const file = readAttachmentPath(new URL(url).pathname);
+    if (!file) continue;
+    const name = toText(match[3]) || file.name;
     const around = html.slice(Math.max(0, match.index - 180), Math.min(html.length, links.lastIndex + 240));
-    attachments.push({ name, url, size: /\(([^()]+(?:KB|MB|Bytes?))\)/i.exec(toText(around))?.[1] });
+    const candidate = { name, url, size: /\(([^()]+(?:KB|MB|Bytes?))\)/i.exec(toText(around))?.[1] };
+    const existing = attachments.get(file.id);
+    // Redmine renders both preview and /download/ links. Prefer the preview URL;
+    // it has the correct inline content type for image thumbnails.
+    if (!existing || (!file.download && existing.download)) attachments.set(file.id, { ...candidate, download: file.download });
   }
-  return attachments;
+  return [...attachments.values()].map(({ download: _download, ...attachment }) => attachment);
+}
+
+function readAttachmentPath(pathname) {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts[0] !== "attachments") return undefined;
+  const download = parts[1] === "download";
+  const idIndex = download ? 2 : 1;
+  const id = parts[idIndex];
+  if (!/^\d+$/.test(id ?? "") || !parts[idIndex + 1]) return undefined;
+  return { id, name: decodeURIComponent(parts.slice(idIndex + 1).join("/")), download };
 }
 
 function readHistoryComments(html) {
@@ -682,6 +843,12 @@ function splitSetCookie(value) {
  */
 async function analyzeTaskWithAgent(ctx, task, repositoryPath) {
   const git = readGitContext(repositoryPath, task.id);
+  let analysisSkill;
+  try {
+    analysisSkill = readFileSync(FRONTEND_ANALYSIS_SKILL_PATH, "utf8");
+  } catch (err) {
+    throw new Error(`无法读取前端分析 Skill：${err.message}`);
+  }
 
   // 读取 DSH 的默认模型配置
   let provider = "ali-bailian";
@@ -698,9 +865,9 @@ async function analyzeTaskWithAgent(ctx, task, repositoryPath) {
   }
 
   const prompt = [
-    "请作为软件研发任务的主分析 Agent，只基于给出的工单和仓库元数据进行审慎分析。",
+    "请作为前端问题主分析 Agent，严格按照系统消息中的 analyze-frontend-issue Skill 分析本工单。",
     '不要声称已经阅读未提供的代码或附件内容；不确定时明确标注"待核实"。',
-    "输出中文，按以下固定结构：\n1. 问题理解\n2. 可能影响面\n3. 与近期提交/当前改动的关联\n4. 建议排查路径\n5. 风险、缺口与需要人工确认的问题\n6. 建议分配给开发/测试 Agent 的子任务。",
+    "现有上下文没有提供仓库文件内容或浏览器 Network 记录时，必须按照 Skill 明确写出缺失信息和后续排查动作，不得伪造数据流、接口或 Git 结论。",
     "",
     `工单编号：${task.id}`,
     `标题：${task.title}`,
@@ -721,8 +888,8 @@ async function analyzeTaskWithAgent(ctx, task, repositoryPath) {
   // 使用 DSH 的 LLM 运行时
   const signal = AbortSignal.timeout(90_000);
   const messages = [
-    { role: "system", content: "你是严谨的软件研发分析 Agent。输出可执行、可验证的结论。" },
-    { role: "user", content: prompt },
+    { role: "system", content: [{ type: "text", text: `你是严谨的前端问题分析 Agent。以下 Skill 是必须遵循的完整分析规范：\n\n${analysisSkill}` }] },
+    { role: "user", content: [{ type: "text", text: prompt }] },
   ];
 
   const chunks = [];
@@ -755,7 +922,7 @@ function formatComments(task) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const name = "agent-console";
-export const inject = ["webServer", "llm"];
+export const inject = ["webServer", "llm", "agents"];
 
 export function apply(ctx) {
   const webServer = ctx.webServer;
@@ -766,7 +933,11 @@ export function apply(ctx) {
 
   const taskManager = new TaskManager();
   let adapter = undefined;
-  let visionConfig = undefined;
+  let visionConfig = {
+    baseUrl: process.env.VISION_BASE_URL ?? DEFAULT_VISION_CONFIG.baseUrl,
+    model: process.env.VISION_MODEL ?? DEFAULT_VISION_CONFIG.model,
+    apiKey: process.env.VISION_API_KEY ?? DEFAULT_VISION_CONFIG.apiKey,
+  };
   let analysisRepositoryPath = undefined;
 
   // 启动即使用本机默认账号；环境变量优先，便于临时覆盖。
@@ -951,12 +1122,18 @@ export function apply(ctx) {
 
       // POST /api/agent-console/tasks/:taskId/analyze (主分析 Agent - 使用 DSH LLM)
       if (req.method === "POST" && segs[1] === "analyze") {
-        if (!adapter || !analysisRepositoryPath) {
-          json(res, 409, { ok: false, error: { code: "ANALYSIS_NOT_CONFIGURED", message: "请先配置 FoxHIS 和代码仓库路径，再开始分析。" } });
+        if (!adapter) {
+          json(res, 503, { ok: false, error: { code: "FOXHIS_UNAVAILABLE", message: "FoxHIS 连接初始化失败，请检查 Host 日志。" } });
           return;
         }
         const task = taskManager.get(taskId);
         if (!task) { json(res, 404, { ok: false, error: { code: "NOT_FOUND", message: "任务不存在。" } }); return; }
+        const project = task.projects?.[0];
+        const repositoryConfig = project ? readRepositoryConfigs()[project] : undefined;
+        if (!repositoryConfig?.repositoryPath) {
+          json(res, 409, { ok: false, error: { code: "ANALYSIS_NOT_CONFIGURED", message: `请先为项目 ${project || "未标记项目"} 配置代码仓库。` } });
+          return;
+        }
         if (task.phase !== "pending") {
           json(res, 409, { ok: false, error: { code: "TASK_NOT_PENDING", message: "该任务已开始分析或进入后续阶段。" } });
           return;
@@ -986,7 +1163,7 @@ export function apply(ctx) {
           taskManager.transition(task.id, "analyzing");
 
           // 使用 DSH LLM 进行文本分析
-          const result = await analyzeTaskWithAgent(ctx, current, analysisRepositoryPath);
+          const result = await analyzeTaskWithAgent(ctx, current, repositoryConfig.repositoryPath);
           taskManager.update(task.id, {
             impactAnalysis: {
               summary: result.summary,
@@ -1163,13 +1340,66 @@ export function apply(ctx) {
 
   webServer.register({
     kind: "exact",
+    path: "/api/agent-console/repositories",
+    handler: (_req, res) => json(res, 200, { ok: true, repositories: readRepositoryConfigs() }),
+  });
+
+  webServer.register({
+    kind: "exact",
+    path: "/api/agent-console/repositories/configure",
+    handler: async (req, res) => {
+      const body = await readJsonBody(req);
+      try {
+        const config = configureProjectRepository(body.project, body.sourceType, body.source);
+        json(res, 200, { ok: true, config });
+      } catch (err) {
+        json(res, 400, { ok: false, error: { code: "REPOSITORY_CONFIG_FAILED", message: err.message } });
+      }
+    },
+  });
+
+  webServer.register({
+    kind: "exact",
     path: "/api/agent-console/workspace",
-    handler: (_req, res) => json(res, 200, {
-      name: "FoxHIS 工单看板",
-      cwd: process.cwd(),
-      projects: [],
-      branchPrefix: "foxhis",
-    }),
+    handler: (req, res) => {
+      // Never retain a repository selected for a previous workspace/session.
+      analysisRepositoryPath = undefined;
+      const sessionId = readQuery(req).get("sessionId") ?? undefined;
+      const workspaceName = readQuery(req).get("workspaceName") ?? undefined;
+      let agent = sessionId ? ctx.agents?.get?.(sessionId) : undefined;
+      if (!agent && typeof ctx.agents?.entries === "function") {
+        for (const [, candidate] of ctx.agents.entries()) { agent = candidate; break; }
+      }
+      const matchedWorkspace = workspaceName ? readRecentWorkspaceRoot(workspaceName) : undefined;
+      if (workspaceName && !matchedWorkspace) {
+        json(res, 404, { ok: false, error: { code: "WORKSPACE_NAME_NOT_FOUND", message: `未找到当前工作区对应的本地项目：${workspaceName}` } });
+        return;
+      }
+      const cwd = matchedWorkspace ?? agent?.session?.header?.cwd ?? readRecentWorkspaceRoot();
+      if (!cwd) {
+        json(res, 404, { ok: false, error: { code: "WORKSPACE_NOT_FOUND", message: "未找到当前会话的工作区路径。" } });
+        return;
+      }
+      try {
+        const repositoryPath = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+          encoding: "utf8", timeout: 5_000, windowsHide: true,
+        }).trim();
+        analysisRepositoryPath = pathResolve(repositoryPath);
+        const branch = execFileSync("git", ["-C", analysisRepositoryPath, "branch", "--show-current"], {
+          encoding: "utf8", timeout: 5_000, windowsHide: true,
+        }).trim();
+        json(res, 200, {
+          ok: true,
+          name: analysisRepositoryPath.split(/[\\/]/).pop() || "当前仓库",
+          cwd,
+          repositoryPath: analysisRepositoryPath,
+          branch,
+          sessionId: agent?.id ?? sessionId ?? null,
+        });
+      } catch {
+        json(res, 422, { ok: false, error: { code: "WORKSPACE_NOT_GIT", message: `当前会话目录不是 Git 仓库：${cwd}` } });
+      }
+    },
   });
 
   ctx.logger?.info("[agent-console] 插件已就绪，API 路由已注册");

@@ -96,7 +96,16 @@ export const api = {
     }),
 
   getAnalysisStatus: () => request<{ configured: boolean; baseUrl: string | null; model: string | null; repositoryPath: string | null }>('/analysis/status'),
+  getRepositories: () => request<{ ok: boolean; repositories: Record<string, { project: string; sourceType: 'local' | 'remote'; source: string; repositoryPath: string }> }>('/repositories'),
+  configureRepository: (config: { project: string; sourceType: 'local' | 'remote'; source: string }) =>
+    request<{ ok: boolean; config: { project: string; sourceType: 'local' | 'remote'; source: string; repositoryPath: string } }>('/repositories/configure', { method: 'POST', body: JSON.stringify(config) }),
 
   // 工作区
-  getWorkspace: () => request<{ name: string; cwd: string; projects: string[]; branchPrefix: string }>('/workspace'),
+  getWorkspace: (sessionId?: string, workspaceName?: string) => {
+    const query = new URLSearchParams()
+    if (sessionId) query.set('sessionId', sessionId)
+    if (workspaceName) query.set('workspaceName', workspaceName)
+    const suffix = query.toString()
+    return request<{ ok: boolean; name: string; cwd: string; repositoryPath: string; branch: string; sessionId: string | null }>(`/workspace${suffix ? `?${suffix}` : ''}`)
+  },
 }
