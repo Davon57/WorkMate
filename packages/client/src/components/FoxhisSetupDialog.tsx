@@ -52,7 +52,7 @@ export function FoxhisSetupDialog({ onClose, onConfigured }: FoxhisSetupDialogPr
           <input type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" required />
         </label>
 
-        <p className="form-hint">凭据只在当前 Host 进程内存中使用，不会保存到项目文件或日志。</p>
+        <p className="form-hint">登录成功后会使用 Windows 当前用户的 DPAPI 加密保存；密码不会写入项目、插件文件或日志，其他 Windows 用户无法解密。</p>
         {error && <p className="form-error">{error}</p>}
 
         <div className="modal-actions">

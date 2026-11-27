@@ -50,7 +50,7 @@ export const api = {
     method: 'POST',
   }),
 
-  runTaskAnalysis: (taskId: string) => request<{ ok: boolean; task: TaskContext }>(`/tasks/${taskId}/analyze`, {
+  runTaskAnalysis: (taskId: string) => request<{ ok: boolean; task: TaskContext; sessionId?: string }>(`/tasks/${taskId}/analyze`, {
     method: 'POST',
   }),
 
@@ -67,7 +67,7 @@ export const api = {
     }),
 
   executeTask: (taskId: string, subAgentTypes: string[]) =>
-    request<{ ok: boolean; task: TaskContext }>(`/tasks/${taskId}/execute`, {
+    request<{ ok: boolean; task: TaskContext; sessionId?: string }>(`/tasks/${taskId}/execute`, {
       method: 'POST',
       body: JSON.stringify({ taskId, subAgentTypes }),
     }),

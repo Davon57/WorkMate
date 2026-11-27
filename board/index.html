@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorkMate 工单看板</title>
+<style>
+:root {
+  color-scheme: light dark;
+  font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+  --page: #fff; --sidebar: #fafaf9; --surface: #fff; --soft: #f4f4f3;
+  --hover: #eeefed; --line: #e5e5e2; --ink: #202124; --muted: #61666d;
+  --action: #202124; --action-text: #fff; --focus: #285fba;
+  --new-bg: #eaf2ff; --new-text: #244d96;
+  --done-bg: #e6f4eb; --done-text: #235d3b;
+  --later-bg: #f8eedc; --later-text: #76521e; --error: #a52827;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #202020; --sidebar: #232323; --surface: #282828; --soft: #2e2e2e;
+    --hover: #343434; --line: #3b3b3b; --ink: #f1f1f1; --muted: #b6b6b6;
+    --action: #ececec; --action-text: #202020; --focus: #a2c3ff;
+    --new-bg: #273750; --new-text: #b9d3ff;
+    --done-bg: #294037; --done-text: #b4e2c6;
+    --later-bg: #413627; --later-text: #efd2a1; --error: #ffaca7;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); }
+h1, h2, h3, p { margin: 0; }
+h1 { font-size: 15px; font-weight: 650; }
+h2 { font-size: clamp(20px, 3vw, 28px); line-height: 1.3; letter-spacing: -.018em; overflow-wrap: anywhere; }
+h3 { font-size: 13px; font-weight: 650; }
+small, .muted { color: var(--muted); }
+header {
+  height: 58px; padding: 0 22px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.mark {
+  display: grid; place-items: center; width: 28px; height: 28px;
+  border-radius: 8px; background: var(--action); color: var(--action-text);
+  font-size: 12px; font-weight: 700;
+}
+.grid { min-height: calc(100dvh - 58px); display: grid; grid-template-columns: minmax(248px, 330px) minmax(0, 1fr); }
+.inbox { min-width: 0; background: var(--sidebar); border-right: 1px solid var(--line); }
+.panel-head h2 { font-size: 14px; letter-spacing: 0; }
+.panel-head small { font-variant-numeric: tabular-nums; }
+.toolbar, .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.toolbar { margin-top: 8px; }
+.toolbar select { flex: 1; }
+#search { width: 100%; }
+button, input, select {
+  min-height: 34px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink); font: inherit;
+}
+input { min-width: 0; }
+button { cursor: pointer; font-weight: 550; }
+button:hover { background: var(--hover); }
+button:disabled { opacity: .58; cursor: wait; }
+button.primary { background: var(--action); color: var(--action-text); border-color: var(--action); }
+button.primary:hover:not(:disabled) { opacity: .84; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.status { margin: 8px 2px 0; font-size: 12px; color: var(--muted); }
+.error { color: var(--error); }
+.list { max-height: calc(100dvh - 210px); overflow: auto; padding: 2px 8px 14px; scrollbar-color: var(--line) transparent; }
+.ticket {
+  width: 100%; display: grid; gap: 5px; text-align: left; background: transparent;
+  border: 1px solid transparent; border-radius: 9px; padding: 9px 10px; margin-bottom: 2px;
+}
+.ticket[aria-current=true] { background: var(--hover); border-color: var(--line); }
+.ticket > span { overflow-wrap: anywhere; line-height: 1.45; }
+.ticket small { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 11px; font-weight: 450; }
+.ticket small > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge { flex: none; border-radius: 999px; padding: 1px 7px; color: var(--muted); background: var(--soft); }
+.badge[data-state="新建"] { color: var(--new-text); background: var(--new-bg); }
+.badge[data-state="已解决"] { color: var(--done-text); background: var(--done-bg); }
+.badge[data-state="延迟处理"] { color: var(--later-text); background: var(--later-bg); }
+.detail { max-width: 860px; margin: 0 auto; padding: clamp(22px, 5vw, 56px); display: grid; align-content: start; gap: 14px; }
+.detail section { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 16px; margin-top: 6px; }
+.detail label { flex: 1 1 230px; display: grid; gap: 6px; font-size: 12px; font-weight: 550; }
+.detail input { width: 100%; font-size: 13px; }
+.detail img { max-width: 100%; max-height: 420px; object-fit: contain; border-radius: 8px; }
+.detail-text, .report { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font: inherit; margin: 0; }
+.report { background: var(--soft); border: 1px solid var(--line); padding: 14px; border-radius: 9px; }
+.empty { color: var(--muted); padding: 14px 12px; }
+dialog { width: min(420px, 94vw); border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); padding: 22px; box-shadow: 0 18px 64px #0002; }
+dialog h2 { font-size: 19px; }
+dialog::backdrop { background: #0005; }
+form { display: grid; gap: 12px; }
+form label { display: grid; gap: 5px; }
+form .actions { justify-content: flex-end; }
+form p:empty { display: none; }
+@media (max-width: 640px) {
+  header { padding: 0 14px; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  .inbox { border-right: 0; border-bottom: 1px solid var(--line); }
+  .list { max-height: 34dvh; }
+  .detail { padding: 22px 16px; }
+}
+/* Workbench composition */
+:root {
+  --page: #f4f4f2;
+  --sidebar: #fafaf8;
+  --surface: #fff;
+  --soft: #f4f5f3;
+  --line: #e4e5df;
+  --action: #203b31;
+  --action-text: #fff;
+  --focus: #356b58;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #191b1a; --sidebar: #222523; --surface: #242725;
+    --soft: #2b2f2c; --line: #373c38; --action: #c4ded0;
+    --action-text: #1b3027; --focus: #a0cbb7;
+  }
+}
+.topbar {
+  min-height: 52px; height: auto; padding: 8px 16px;
+  background: var(--surface); position: sticky; top: 0; z-index: 1;
+}
+.brand { flex: none; }
+.brand-name { font-size: 14px; font-weight: 700; letter-spacing: -.02em; }
+.brand small { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mark { width: 26px; height: 26px; border-radius: 7px; }
+.topbar .toolbar { margin: 0; min-width: 0; flex-wrap: nowrap; }
+#search { width: clamp(135px, 23vw, 300px); }
+#statusFilter { min-width: 94px; }
+.connection { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.connection-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--muted); }
+.connection[data-connected=true] .connection-dot { background: #48836b; }
+.grid {
+  min-height: calc(100dvh - 52px); background: var(--surface);
+  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+}
+.inbox { display: flex; flex-direction: column; min-width: 0; }
+.status { margin: 10px 12px 0; }
+.status:empty { display: none; }
+.list { position: sticky; top: 52px; max-height: calc(100dvh - 52px); padding: 7px; }
+.ticket { padding: 11px 10px; gap: 5px; border-radius: 8px; }
+.ticket[aria-current=true] { background: var(--done-bg); border-color: transparent; }
+.ticket:focus-visible { outline-offset: -2px; }
+.detail-shell { min-width: 0; }
+.detail {
+  max-width: none; padding: clamp(18px, 3vw, 36px); gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+}
+.detail-head { grid-column: 1 / -1; display: grid; gap: 8px; }
+.detail-head .badge { width: max-content; }
+.detail-head .muted { display: flex; align-items: center; gap: 8px; }
+.detail-article { min-width: 0; display: grid; align-content: start; gap: 18px; }
+.detail section { margin: 0; padding: 0; border: 0; }
+.detail-article section + section { border-top: 1px solid var(--line); padding-top: 17px; }
+.detail-text { line-height: 1.75; }
+.analysis-pane {
+  min-width: 0; display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--sidebar);
+}
+.analysis-actions { flex: 1 1 290px; min-width: 0; }
+.detail .analysis-actions label { flex: 1 1 200px; min-width: 0; }
+.analysis-actions .repository-summary { flex: 1 1 180px; min-width: 0; }
+.analysis-actions .primary { white-space: nowrap; margin-left: auto; }
+.report { grid-column: 1 / -1; padding: 18px; }
+.detail-empty {
+  display: grid; min-height: 360px; place-content: center; justify-items: center;
+  gap: 8px; padding: 26px; text-align: center; color: var(--muted);
+}
+.detail-empty strong { color: var(--ink); font-size: 15px; }
+.empty-icon {
+  display: grid; place-items: center; width: 42px; height: 42px;
+  border-radius: 12px; border: 1px solid var(--line); background: var(--soft);
+  color: var(--action); font-size: 20px; margin-bottom: 3px;
+}
+@media (max-width: 650px) {
+  .topbar { padding: 7px 10px; flex-wrap: wrap; gap: 6px 10px; }
+  .topbar .toolbar { flex: 1 1 100%; }
+  #search { flex: 1; width: 0; min-width: 46px; }
+  #statusFilter { min-width: 0; flex: 0 1 auto; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  .inbox { border: 0; border-bottom: 1px solid var(--line); }
+  .list { position: static; max-height: 33dvh; }
+  .detail-empty { min-height: 190px; }
+}
+[hidden] { display: none !important; }
+.sign-in { min-height: calc(100dvh - 52px); display: grid; place-items: center; padding: 24px; }
+.sign-in-card {
+  width: min(100%, 392px); padding: 26px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 14px;
+}
+#loginForm h2 { font-size: 21px; }
+#loginForm .login-hint { color: var(--muted); margin: -6px 0 4px; font-size: 13px; }
+#loginForm .remember { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+#loginForm .remember input { min-height: 0; margin: 0; accent-color: var(--action); }
+#loginForm [type="submit"] { min-width: 92px; }
+.report { white-space: normal; overflow-wrap: anywhere; min-width: 0; background: var(--surface); }
+.report h1,.report h2,.report h3,.report h4 { margin: 1.2em 0 .55em; line-height: 1.32; }
+.report h1 { font-size: 23px; }
+.report h2 { font-size: 20px; }
+.report h3 { font-size: 16px; }
+.report p,.report ul,.report ol,.report blockquote { margin: .75em 0; line-height: 1.7; }
+.report > :first-child { margin-top: 0; }
+.report > :last-child { margin-bottom: 0; }
+.report code { font-family: Consolas, monospace; background: var(--soft); padding: 2px 4px; border-radius: 4px; }
+.report pre { overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
+.report pre code { padding: 0; }
+.report a { color: var(--focus); text-underline-offset: 2px; }
+.report blockquote { border-left: 3px solid var(--line); padding-left: 12px; color: var(--muted); }
+.report .table-scroll { overflow-x: auto; margin: 14px 0; }
+.report table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.report th,.report td { padding: 9px 11px; border: 1px solid var(--line); vertical-align: top; text-align: left; }
+.report th { background: var(--soft); }
+.report td:first-child { min-width: 105px; }
+.progress-line { display: flex; align-items: center; gap: 10px; }
+.progress-ring { width: 14px; height: 14px; flex: none; border: 2px solid var(--line); border-top-color: var(--focus); border-radius: 50%; animation: spin 850ms linear infinite; }
+.progress-time { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .progress-ring { animation: none; } }
+.repository-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.repository-summary span { overflow-wrap: anywhere; font: 12px/1.5 Consolas, monospace; color: var(--muted); }
+.repository-summary button { flex: none; }
+.report-meta { display:block; margin-bottom:12px; color:var(--muted); overflow-wrap:anywhere; }
+#modifyRequirements { width: 100%; resize: vertical; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--surface); }
+.thread-link { color: var(--focus); font-size: 13px; text-underline-offset: 2px; }
+.change-history { grid-column: 1 / -1; }
+.change-entry { border: 1px solid var(--line); border-radius: 9px; padding: 12px; overflow-wrap: anywhere; }
+.change-entry > * + * { margin-top: 7px; }
+.change-entry summary { cursor: pointer; font-weight: 600; }
+.change-entry .report { padding: 10px; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="mark" aria-hidden="true">W</span><h1 class="brand-name">WorkMate</h1><small id="count" hidden aria-label="工单数量">0 项</small></div>
+  <div class="toolbar" id="toolbar" aria-label="工单操作" hidden>
+    <input id="search" type="search" aria-label="筛选工单" placeholder="搜索编号、标题或项目">
+    <select id="statusFilter" aria-label="按状态筛选"><option value="">全部状态</option></select>
+    <button id="refresh">刷新</button>
+    <button id="connect" class="connection"><span class="connection-dot" aria-hidden="true"></span><span id="connectionLabel">连接 Foxhis</span></button>
+  </div>
+</header>
+<main class="grid" id="workspace" hidden>
+  <section class="inbox" aria-label="工单列表">
+    <p class="status" id="status" role="status"></p>
+    <div class="list" id="list"></div>
+  </section>
+  <section class="detail-shell" aria-label="工单详情"><div id="detail"></div></section>
+</main>
+<section class="sign-in" id="signIn" aria-label="Foxhis 连接">
+  <div class="sign-in-card" id="signInCard">
+    <form id="loginForm">
+      <h2>连接 Foxhis</h2>
+      <p class="login-hint">连接后查看分配给你的工单。</p>
+      <label>站点<input name="baseUrl" type="url" value="https://pm.foxhis.com" required></label>
+      <label>账号<input name="username" autocomplete="username" required></label>
+      <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+      <label class="remember"><input name="remember" type="checkbox">在此 Windows 用户下记住登录</label>
+      <p id="loginStatus" class="error" role="status"></p>
+      <div class="actions"><button id="cancel" type="button" hidden>取消</button><button class="primary" type="submit">连接</button></div>
+    </form>
+  </div>
+</section>
+<dialog id="login" aria-label="重新连接 Foxhis"></dialog>
+<dialog id="modifyDialog" aria-labelledby="modifyTitle">
+  <form id="modifyForm" method="dialog">
+    <h2 id="modifyTitle">确认修改</h2>
+    <p id="modifyTarget" class="muted"></p>
+    <label>本次修改要求（选填）
+      <textarea id="modifyRequirements" maxlength="4000" rows="4" placeholder="例如：只加加载反馈，保留现有接口"></textarea>
+    </label>
+    <div class="actions"><button value="cancel" formnovalidate>取消</button><button value="confirm" class="primary">确认并修改</button></div>
+  </form>
+</dialog>
+<script>
+const $ = (id) => document.getElementById(id);
+let items = [], selected = "", selectionVersion = 0;
+const reports = new Map();
+let accountVersion = 0;
+let analyzing = null;
+let connected = false;
+function element(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+function threadLink(threadId) {
+  const link = element("a", "打开 Codex 会话", "thread-link");
+  link.href = "codex://threads/" + encodeURIComponent(threadId);
+  return link;
+}
+
+function showHistory(container, entries) {
+  container.hidden = entries.length === 0;
+  container.replaceChildren(element("h3", "修改记录"));
+  const status = { running: "修改中", completed: "已完成", failed: "失败", interrupted: "已中断" };
+  for (const entry of entries) {
+    const row = element("details", undefined, "change-entry");
+    row.open = container.childElementCount === 1;
+    const summary = element("summary", `${status[entry.status]} · ${new Date(entry.startedAt).toLocaleString("zh-CN")}`);
+    row.append(summary, element("p", entry.repository, "muted"));
+    if (entry.requirements) row.append(element("p", "本次要求：" + entry.requirements, "detail-text"));
+    if (entry.files.length) row.append(element("p", "变更文件：" + entry.files.join("、"), "detail-text"));
+    if (entry.error) row.append(element("p", entry.error, "error"));
+    if (entry.html) {
+      const result = element("div", undefined, "report");
+      result.innerHTML = entry.html;
+      row.append(result);
+    }
+    if (entry.threadId) row.append(threadLink(entry.threadId));
+    container.append(row);
+  }
+}
+
+function confirmModification(repository) {
+  const dialog = $("modifyDialog");
+  $("modifyTarget").textContent = "目标仓库：" + repository;
+  $("modifyRequirements").value = "";
+  dialog.returnValue = "cancel";
+  dialog.showModal();
+  return new Promise(resolve => dialog.addEventListener("close", () => {
+    resolve(dialog.returnValue === "confirm" ? $("modifyRequirements").value : null);
+  }, { once: true }));
+}
+
+function displayReport(id, report) {
+  const result = reports.get(id);
+  const active = analyzing?.id === id ? analyzing : null;
+  report.hidden = !result && !active;
+  report.replaceChildren();
+  if (active) {
+    const line = element("div", undefined, "progress-line");
+    const ring = element("span", undefined, "progress-ring");
+    ring.setAttribute("aria-hidden", "true");
+    const elapsed = Math.floor((Date.now() - active.start) / 1000);
+    const duration = elapsed < 60 ? `${elapsed} 秒` : `${Math.floor(elapsed / 60)} 分 ${elapsed % 60} 秒`;
+    const message = element("span", active.message);
+    message.setAttribute("role", "status");
+    line.append(ring, message, element("small", "已用 " + duration, "progress-time"));
+    report.append(line);
+  } else if (result?.html) {
+    report.innerHTML = result.html;
+    if (result.completedAt) report.prepend(element("small", "上次分析 · " + new Date(result.completedAt).toLocaleString("zh-CN") + " · " + result.repository, "report-meta"));
+    if (result.threadId) report.prepend(threadLink(result.threadId));
+    if (result.error || result.warning) report.prepend(element("p", result.error || result.warning, "error"));
+    for (const table of report.querySelectorAll("table")) {
+      const wrapper = element("div", undefined, "table-scroll");
+      table.replaceWith(wrapper);
+      wrapper.append(table);
+    }
+  } else if (result?.error) {
+    report.append(element("p", result.error, "error"));
+  }
+}
+
+async function streamAnalysis(body, onProgress, onRepository, route = "analyze", onThread = () => {}) {
+  const response = await fetch("/api/" + route, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-WorkMate": "board" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error((await response.json()).error);
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += value;
+      let end;
+      while ((end = buffer.indexOf("\n")) !== -1) {
+        const event = JSON.parse(buffer.slice(0, end));
+        buffer = buffer.slice(end + 1);
+        if (event.type === "progress") onProgress(event.message);
+        if (event.type === "repository") onRepository(event.path);
+        if (event.type === "thread") onThread(event.threadId);
+        if (event.type === "error") throw new Error(event.message);
+        if (event.type === "result") return event;
+      }
+    }
+    throw new Error("分析连接已中断，请重试。");
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
+function showEmptyDetail() {
+  const detail = $("detail");
+  detail.className = "detail-empty";
+  const icon = element("span", "▤", "empty-icon");
+  icon.setAttribute("aria-hidden", "true");
+  detail.replaceChildren(icon, element("strong", "选择一条工单"), element("p", "详情、附件和 Codex 分析会在这里显示。"));
+}
+function markConnected() {
+  connected = true;
+  $("signIn").hidden = true;
+  $("workspace").hidden = false;
+  $("toolbar").hidden = false;
+  $("count").hidden = false;
+  $("connect").dataset.connected = "true";
+  $("connectionLabel").textContent = "Foxhis 已连接";
+}
+function notice(text, failed = false) {
+  $("status").textContent = text;
+  $("status").classList.toggle("error", failed);
+}
+async function api(route, body = {}) {
+  const response = await fetch("/api/" + route, {method:"POST",headers:{"Content-Type":"application/json","X-WorkMate":"board"},body:JSON.stringify(body)});
+  const data = await response.json();
+  if (!response.ok) throw Object.assign(new Error(data.error), { status: response.status });
+  return data;
+}
+function showItems(next) {
+  items = next;
+  const previous = $("statusFilter").value;
+  $("statusFilter").replaceChildren(new Option("全部状态",""));
+  for (const status of [...new Set(items.map(item => item.status))]) $("statusFilter").add(new Option(status,status));
+  $("statusFilter").value = [...$("statusFilter").options].some(option => option.value === previous) ? previous : "";
+  renderList();
+}
+function renderList() {
+  const query = $("search").value.trim().toLowerCase(), filter = $("statusFilter").value;
+  const visible = items.filter(item => (!filter || item.status === filter) && [item.id,item.title,...item.projects].join(" ").toLowerCase().includes(query));
+  $("count").textContent = visible.length + " 项";
+  $("list").replaceChildren();
+  for (const item of visible) {
+    const button = element("button",undefined,"ticket");
+    button.setAttribute("aria-current",String(item.id === selected));
+    const meta = element("small");
+    const badge = element("span", item.status, "badge");
+    badge.dataset.state = item.status;
+    meta.append(element("span", "#" + item.id + " · " + item.projects.join(" / ")), badge);
+    button.append(meta,element("span", item.title));
+    button.onclick = () => selectItem(item.id);
+    $("list").append(button);
+  }
+  if (!visible.length) $("list").append(element("p",items.length ? "没有符合筛选条件的工单。" : "暂无工单。","empty"));
+}
+async function refresh() {
+  $("refresh").disabled = true;
+  if (connected) notice("正在拉取工单…");
+  try { showItems((await api("items")).items); markConnected(); notice(""); }
+  catch (error) {
+    if (error.status === 401 || !connected) {
+      connected = false;
+      $("signInCard").append($("loginForm"));
+      $("cancel").hidden = true;
+      $("signIn").hidden = false;
+      $("workspace").hidden = true;
+      $("toolbar").hidden = true;
+      $("count").hidden = true;
+      $("connect").dataset.connected = "false";
+      $("connectionLabel").textContent = "连接 Foxhis";
+      if (error.status !== 401) $("loginStatus").textContent = error.message;
+    } else {
+      notice(error.message, true);
+    }
+  }
+  finally { $("refresh").disabled = false; }
+}
+async function selectItem(id) {
+  selected = id;
+  const version = ++selectionVersion;
+  renderList();
+  const detail = $("detail");
+  detail.className = "detail";
+  detail.replaceChildren(element("p","正在读取工单…","muted"));
+  try {
+    const issue = await api("detail",{id});
+    if (version !== selectionVersion) return;
+    const heading = element("div", undefined, "detail-head");
+    const metadata = element("p", undefined, "muted");
+    const badge = element("span", issue.status, "badge");
+    badge.dataset.state = issue.status;
+    metadata.append(element("span", "#" + issue.id), badge);
+    heading.append(metadata, element("h2", issue.title));
+    const article = element("div", undefined, "detail-article");
+    detail.replaceChildren(heading, article);
+    const description = element("section");
+    description.append(element("h3","问题描述"),element("p",issue.description || "暂无描述。","detail-text"));
+    article.append(description);
+    if (issue.comments.length) {
+      const comments = element("section");
+      comments.append(element("h3","工单记录"));
+      for (const comment of issue.comments) comments.append(element("small",comment.author),element("p",comment.content,"detail-text"));
+      article.append(comments);
+    }
+    if (issue.attachments.length) {
+      const attachments = element("section"), buttons = element("div",undefined,"actions"), preview = element("div");
+      attachments.append(element("h3","附件"),buttons,preview);
+      for (const attachment of issue.attachments) {
+        const button = element("button",attachment.name);
+        button.onclick = async () => {
+          button.disabled = true;
+          preview.replaceChildren(element("p","正在加载截图…","muted"));
+          try {
+            const result = await api("image",{id,attachmentUrl:attachment.url});
+            const image = element("img");
+            image.alt = attachment.name;
+            image.src = result.image;
+            preview.replaceChildren(image);
+          } catch (error) { preview.replaceChildren(element("p",error.message,"error")); }
+          finally { button.disabled = false; }
+        };
+        buttons.append(button);
+      }
+      article.append(attachments);
+    }
+    const actions = element("div",undefined,"actions analysis-actions"), label = element("label","业务仓库路径"), input = element("input");
+    input.placeholder = "例如 E:\\projects\\business-app";
+    const projects = issue.projects?.length ? issue.projects : items.find((item) => item.id === id)?.projects;
+    const project = projects?.length === 1 ? projects[0] : null;
+    const repositoryKey = project && issue.site ? "workmate.repository:" + JSON.stringify([issue.site, project]) : null;
+    const savedPath = repositoryKey ? localStorage.getItem(repositoryKey) : null;
+    input.value = savedPath ?? "";
+    const repositorySummary = element("div", undefined, "repository-summary");
+    const pathLabel = element("span", savedPath ?? "");
+    const changePath = element("button", "更换");
+    changePath.onclick = () => {
+      repositorySummary.hidden = true;
+      label.hidden = false;
+      input.focus();
+    };
+    repositorySummary.append(pathLabel, changePath);
+    repositorySummary.hidden = !savedPath;
+    label.hidden = Boolean(savedPath);
+    label.append(input);
+    if (issue.report && (!reports.get(id)?.html || issue.report.completedAt > reports.get(id).completedAt)) {
+      reports.set(id, { ...reports.get(id), ...issue.report });
+    }
+    const runLabel = () => reports.get(id)?.html ? "重新分析" : "用 Codex 分析";
+    const run = element("button", analyzing?.id === id ? "分析中…" : runLabel(), "primary");
+    const report = element("article", undefined, "report");
+    report.dataset.workitem = id;
+    displayReport(id, report);
+    run.onclick = async () => {
+      if (!input.value.trim()) { input.focus(); return; }
+      if (analyzing) return;
+      const runAccount = accountVersion;
+      analyzing = { id, start: Date.now(), message: "正在准备分析" };
+      run.disabled = true;
+      run.textContent = "分析中…";
+      syncModify();
+      const render = () => {
+        const activeReport = $("detail").querySelector(".report");
+        if (activeReport?.dataset.workitem === id) displayReport(id, activeReport);
+      };
+      const clock = setInterval(render, 1000);
+      render();
+      try {
+        const result = await streamAnalysis({ id, repository: input.value }, (message) => {
+          analyzing.message = message;
+          render();
+        }, (path) => {
+          if (repositoryKey) localStorage.setItem(repositoryKey, path);
+          input.value = path;
+          if (repositoryKey) {
+            pathLabel.textContent = path;
+            repositorySummary.hidden = false;
+            label.hidden = true;
+          }
+        }, "analyze", threadId => {
+          analysisPane.querySelector(".thread-link")?.remove();
+          analysisPane.append(threadLink(threadId));
+        });
+        if (runAccount === accountVersion) reports.set(id, result);
+      } catch (error) {
+        if (runAccount === accountVersion) reports.set(id, { ...reports.get(id), error: error.message });
+      } finally {
+        clearInterval(clock);
+        analyzing = null;
+        render();
+        run.disabled = false;
+        run.textContent = runLabel();
+        syncModify();
+        if (!detail.contains(run) && selected) selectItem(selected);
+      }
+    };
+    run.disabled = Boolean(analyzing);
+    const history = element("section", undefined, "change-history");
+    showHistory(history, issue.modifications || []);
+    const modify = element("button", "按此报告修改");
+    modify.hidden = !reports.get(id)?.html;
+    modify.disabled = Boolean(analyzing);
+    const syncModify = () => { modify.hidden = !reports.get(id)?.html; modify.disabled = Boolean(analyzing); };
+    modify.onclick = async () => {
+      const source = reports.get(id);
+      const versionAtConfirmation = accountVersion;
+      if (!source?.completedAt || analyzing) return;
+      const requirements = await confirmModification(source.repository);
+      if (requirements === null || analyzing || versionAtConfirmation !== accountVersion || selected !== id) return;
+      analyzing = { id, start: Date.now(), message: "正在准备修改" };
+      const progress = element("p", analyzing.message, "muted");
+      progress.setAttribute("role", "status");
+      analysisPane.append(progress);
+      run.disabled = true;
+      syncModify();
+      try {
+        const result = await streamAnalysis({ id, confirmed: true, reportCompletedAt: source.completedAt, requirements }, message => {
+          progress.textContent = message;
+        }, () => {}, "modify", threadId => {
+          if (!analysisPane.querySelector(".thread-link")) analysisPane.append(threadLink(threadId));
+        });
+        if (versionAtConfirmation === accountVersion) showHistory(history, result.modifications);
+        progress.remove();
+      } catch (error) {
+        progress.textContent = error.message;
+        progress.className = "error";
+      } finally {
+        analyzing = null;
+        run.disabled = false;
+        syncModify();
+        if (!detail.contains(modify) && selected) selectItem(selected);
+      }
+    };
+    const analysisPane = element("aside", undefined, "analysis-pane");
+    analysisPane.setAttribute("aria-label", "Codex 分析");
+    actions.append(repositorySummary, label, run, modify);
+    analysisPane.append(actions);
+    article.before(analysisPane);
+    detail.append(report, history);
+  } catch (error) {
+    if (version === selectionVersion) detail.replaceChildren(element("p",error.message,"error"));
+  }
+}
+$("connect").onclick = () => {
+  $("loginStatus").textContent = "";
+  $("cancel").hidden = false;
+  $("login").append($("loginForm"));
+  $("login").showModal();
+};
+$("cancel").onclick = () => $("login").close();
+$("loginForm").onsubmit = async (event) => {
+  event.preventDefault();
+  const button = event.submitter;
+  button.disabled = true;
+  $("loginStatus").textContent = "";
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  data.remember = event.currentTarget.elements.remember.checked;
+  try {
+    const result = await api("login", data);
+    showItems(result.items);
+    $("login").close(); markConnected(); notice(result.warning || "", Boolean(result.warning));
+    selected = ""; ++selectionVersion; ++accountVersion; reports.clear();
+    showEmptyDetail();
+  } catch (error) { $("loginStatus").textContent = error.message; }
+  finally { $("loginForm").elements.password.value = ""; button.disabled = false; }
+};
+$("refresh").onclick = refresh;
+$("search").oninput = renderList;
+$("statusFilter").onchange = renderList;
+showEmptyDetail(); renderList(); refresh();
+</script>
+</body>
+</html>

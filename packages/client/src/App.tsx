@@ -7,6 +7,7 @@ import { api } from './api'
 import { TaskOverview } from './components/TaskOverview'
 import { TaskDetail } from './components/TaskDetail'
 import { RepositorySetupDialog } from './components/RepositorySetupDialog'
+import { FoxhisSetupDialog } from './components/FoxhisSetupDialog'
 import type { TaskSummary, TaskContext, DashboardStats } from '@agent-console/types'
 
 export function App() {
@@ -20,6 +21,7 @@ export function App() {
   const [repositoryProject, setRepositoryProject] = useState<string | null>(null)
   const [isTaskListCollapsed, setIsTaskListCollapsed] = useState(false)
   const [repositories, setRepositories] = useState<Record<string, { sourceType: 'local' | 'remote'; source: string; repositoryPath: string }>>({})
+  const [showFoxhisSetup, setShowFoxhisSetup] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -44,7 +46,7 @@ export function App() {
     try {
       const adapter = await api.getAdapterStatus()
       if (!adapter.configured) {
-        showNotice('请先配置 FoxHIS 账号和密码，再获取工单。')
+        setShowFoxhisSetup(true)
         return
       }
       await api.fetchTasks()
@@ -97,6 +99,17 @@ export function App() {
       api.getTask(selectedTask.id).then(setSelectedTask).catch(() => {})
     }
   }, [refresh, selectedTask])
+
+  useEffect(() => {
+    if (!selectedTask || !['analyzing', 'executing'].includes(selectedTask.phase)) return
+    const timer = window.setInterval(() => {
+      api.getTask(selectedTask.id).then(task => {
+        setSelectedTask(task)
+        refresh()
+      }).catch(() => {})
+    }, 1500)
+    return () => window.clearInterval(timer)
+  }, [selectedTask?.id, selectedTask?.phase, refresh])
 
   return (
     <div className={`app-layout ${isTaskListCollapsed ? 'task-list-collapsed' : ''}`}>
@@ -167,6 +180,16 @@ export function App() {
             setRepositories(current => ({ ...current, [repositoryProject]: { ...(current[repositoryProject] ?? { sourceType: 'local', source: repositoryPath }), repositoryPath } }))
             setRepositoryProject(null)
             showNotice(`已配置 ${repositoryProject} 的代码仓库`)
+          }}
+        />
+      )}
+
+      {showFoxhisSetup && (
+        <FoxhisSetupDialog
+          onClose={() => setShowFoxhisSetup(false)}
+          onConfigured={() => {
+            setShowFoxhisSetup(false)
+            void handleFetchTasks()
           }}
         />
       )}

@@ -25,6 +25,7 @@ export function TaskDetail({ task, onClose, onUpdated, isTaskListCollapsed, onTo
   const [summaryError, setSummaryError] = useState('')
   const [analyzing, setAnalyzing] = useState(false)
   const [analysisError, setAnalysisError] = useState('')
+  const [executionError, setExecutionError] = useState('')
 
   const handleTransition = useCallback(async (toPhase: TaskPhase) => {
     try {
@@ -36,11 +37,15 @@ export function TaskDetail({ task, onClose, onUpdated, isTaskListCollapsed, onTo
   }, [task.id, onUpdated])
 
   const handleExecute = useCallback(async () => {
+    setExecutionError('')
     try {
-      await api.executeTask(task.id, ['dev', 'test'])
+      const result = await api.executeTask(task.id, ['dev', 'test'])
+      if (result.sessionId) {
+        window.parent.postMessage({ type: 'workmate:open-session', sessionId: result.sessionId }, window.location.origin)
+      }
       onUpdated()
     } catch (err) {
-      console.error('Execute failed:', err)
+      setExecutionError(err instanceof Error ? err.message : '启动代码修改会话失败')
     }
   }, [task.id, onUpdated])
 
@@ -61,7 +66,10 @@ export function TaskDetail({ task, onClose, onUpdated, isTaskListCollapsed, onTo
     setAnalyzing(true)
     setAnalysisError('')
     try {
-      await api.runTaskAnalysis(task.id)
+      const result = await api.runTaskAnalysis(task.id)
+      if (result.sessionId) {
+        window.parent.postMessage({ type: 'workmate:open-session', sessionId: result.sessionId }, window.location.origin)
+      }
       onUpdated()
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : '任务分析失败')
@@ -151,11 +159,11 @@ export function TaskDetail({ task, onClose, onUpdated, isTaskListCollapsed, onTo
               <MarkdownContent content={task.impactAnalysis.summary} />
               <div className="task-analysis-meta">
                 由 {task.impactAnalysis.model} 分析
-                {task.impactAnalysis.repository && ` · ${task.impactAnalysis.repository.branch ?? '未知分支'} · ${task.impactAnalysis.repository.recentCommitCount} 条近期提交 · ${task.impactAnalysis.repository.changedFileCount} 个当前改动`}
+                {task.impactAnalysis.repository && ` · ${task.impactAnalysis.repository.branch ?? '未知分支'} · Harness 会话 ${task.impactAnalysis.sessionId ? '已保留' : '不可用'} · ${task.impactAnalysis.repository.recentCommitCount} 条近期提交 · ${task.impactAnalysis.repository.changedFileCount} 个当前改动`}
               </div>
             </div>
           ) : (
-            <p className="detail-hint">开始分析后，主 Agent 会重新拉取工单、评论和附件清单，并结合配置仓库的近期提交、工单编号相关提交与当前改动给出结论。</p>
+            <p className="detail-hint">开始分析后，主 Agent 会重新拉取工单，并实际检索、读取配置仓库中的相关源码，结合 Git 历史给出结论。</p>
           )}
           {analysisError && <p className="form-error">{analysisError}</p>}
         </div>
@@ -204,16 +212,16 @@ export function TaskDetail({ task, onClose, onUpdated, isTaskListCollapsed, onTo
           </div>
         </div>
 
-        {/* 子 Agent 树 */}
+        {/* Harness 执行阶段 */}
         <div className="detail-section">
-          <div className="detail-section-title">🤖 子会话 / Agent 树</div>
+          <div className="detail-section-title">🤖 Harness 执行阶段</div>
           <div className="agent-tree">
             {/* 真实的主分析调用状态，而不是常驻在线的占位会话。 */}
             <div className="agent-node">
               <div className="agent-node-icon" style={{ background: 'var(--color-primary-dim)' }}>🔀</div>
               <div className="agent-node-content">
                 <div className="agent-node-label">主分析 Agent</div>
-                <div className="agent-node-desc">重新读取工单与 Git 元数据后，由配置模型生成影响分析</div>
+                <div className="agent-node-desc">重新读取工单、相关源码与 Git 元数据后生成影响分析</div>
               </div>
               <span className="agent-node-status" style={{ color: task.impactAnalysis ? 'var(--color-success)' : 'var(--text-tertiary)' }}>
                 {task.impactAnalysis ? '已完成' : '未运行'}
@@ -223,7 +231,7 @@ export function TaskDetail({ task, onClose, onUpdated, isTaskListCollapsed, onTo
             {/* 子 Agent */}
             {task.subAgents.length === 0 ? (
               <div style={{ fontSize: 12, color: 'var(--text-tertiary)', padding: '8px 0' }}>
-                暂无子 Agent
+                尚未开始开发与行为验证
               </div>
             ) : (
               task.subAgents.map(sub => (
@@ -232,6 +240,8 @@ export function TaskDetail({ task, onClose, onUpdated, isTaskListCollapsed, onTo
             )}
           </div>
         </div>
+
+        {task.verificationReport && <VerificationReportView report={task.verificationReport} />}
 
         {/* 验收标准 */}
         {task.acceptanceCriteria.length > 0 && (
@@ -297,6 +307,7 @@ export function TaskDetail({ task, onClose, onUpdated, isTaskListCollapsed, onTo
             <button className="btn btn-ghost" onClick={() => handleTransition('cancelled')}>
               取消
             </button>
+            {executionError && <p className="form-error">{executionError}</p>}
           </>
         )}
         {task.phase === 'executing' && (
@@ -316,6 +327,47 @@ export function TaskDetail({ task, onClose, onUpdated, isTaskListCollapsed, onTo
 
 function MarkdownContent({ content }: { content: string }) {
   return <div className="markdown-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown></div>
+}
+
+function VerificationReportView({ report }: { report: NonNullable<TaskContext['verificationReport']> }) {
+  const conclusion = {
+    verified: ['已验证', 'var(--color-success)'],
+    partially_verified: ['部分验证', 'var(--color-warning)'],
+    failed: ['验证失败', 'var(--color-danger)'],
+    blocked: ['验证阻塞', 'var(--color-danger)'],
+  }[report.conclusion]
+  return (
+    <div className="detail-section evidence-section verification-report">
+      <div className="detail-section-title">🧪 行为验证报告</div>
+      <div className="verification-summary-row">
+        <span className="verification-conclusion" style={{ color: conclusion[1] }}>{conclusion[0]}</span>
+        <span>{report.strategy.framework || '未识别自动化框架'}</span>
+        {report.strategy.level && <span>· {report.strategy.level}</span>}
+        <span>· 置信度 {Math.round(report.strategy.confidence * 100)}%</span>
+      </div>
+      <p className="detail-hint">{report.strategy.reason}</p>
+      {report.behaviors.length > 0 && (
+        <div className="verification-list">
+          {report.behaviors.map((behavior, index) => (
+            <div className="verification-item" key={`${behavior.contract}-${index}`}>
+              <span>{behavior.result === 'passed' ? '✓' : behavior.result === 'failed' ? '✕' : '—'}</span>
+              <div><div>{behavior.contract}</div>{behavior.evidence.length > 0 && <small>{behavior.evidence.join(' · ')}</small>}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {report.executions.length > 0 && (
+        <div className="verification-commands">
+          {report.executions.map((run, index) => (
+            <div key={`${run.command}-${index}`}><code>{run.command}</code><span>{run.status === 'passed' ? '通过' : run.status === 'failed' ? '失败' : '阻塞'}{run.exitCode !== null ? ` · exit ${run.exitCode}` : ''}</span></div>
+          ))}
+        </div>
+      )}
+      {report.manualChecks.length > 0 && <div className="verification-manual"><strong>需要人工验证</strong><ul>{report.manualChecks.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
+      <MarkdownContent content={report.summary} />
+      <div className="task-analysis-meta">生成于 {formatDate(report.generatedAt)} · Harness 会话 {report.sessionId ? '已保留' : '不可用'}</div>
+    </div>
+  )
 }
 
 function isImageAttachment(name: string, contentType?: string): boolean {

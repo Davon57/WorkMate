@@ -109,6 +109,7 @@ export interface TaskContext {
   acceptanceCriteria: string[]
   analysis?: TaskAnalysis
   impactAnalysis?: TaskImpactAnalysis
+  verificationReport?: VerificationReport
 
   // 代码仓库
   repoHints: {
@@ -131,6 +132,41 @@ export interface TaskContext {
   updatedAt: string
   startedAt?: string
   completedAt?: string
+}
+
+export type VerificationConclusion = 'verified' | 'partially_verified' | 'failed' | 'blocked'
+
+export interface VerificationReport {
+  summary: string
+  sessionId?: string
+  generatedAt: string
+  strategy: {
+    framework?: string | null
+    level?: string | null
+    reason: string
+    confidence: number
+    evidence: string[]
+  }
+  behaviors: Array<{
+    contract: string
+    result: 'passed' | 'failed' | 'not_verified' | 'not_automatable'
+    evidence: string[]
+  }>
+  changes: {
+    testFilesAdded: string[]
+    testFilesModified: string[]
+  }
+  executions: Array<{
+    command: string
+    workingDirectory?: string
+    exitCode: number | null
+    status: 'passed' | 'failed' | 'blocked'
+    durationMs?: number | null
+    artifacts: string[]
+  }>
+  failures: string[]
+  manualChecks: string[]
+  conclusion: VerificationConclusion
 }
 
 export interface TaskComment {
@@ -160,6 +196,7 @@ export interface TaskImpactAnalysis {
   summary: string
   model: string
   generatedAt: string
+  sessionId?: string
   repository?: {
     path: string
     branch?: string

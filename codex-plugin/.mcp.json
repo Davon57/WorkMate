@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "workmate": {
+      "command": "node",
+      "args": ["server/workmate.cjs"],
+      "cwd": ".",
+      "env_vars": ["FOXHIS_USERNAME", "FOXHIS_PASSWORD", "FOXHIS_BASE_URL"]
+    }
+  }
+}

@@ -150,3 +150,38 @@ packages/
 - DSH Cordis 插件开发: `@deepseek-ai/cordis`
 - Typert Remote 协议: `@deepseek-ai/dsh-typert-protocol`
 - 参考插件: `@deepseek-ai/dsh-host-plugin-inventory` / `@deepseek-ai/dsh-client-ui-settings-plugin-inventory`
+
+## 在 Codex 中使用 WorkMate
+
+Codex 版提供 Foxhis 工单列表、工单详情、截图预览和接口目录查询。截图支持 2 MiB 以内的 PNG 或 JPEG。WorkMate Skill 使用这些工具在当前业务仓库做只读影响分析，并给出验证方案。
+
+在 WorkMate 根目录，用 Node.js 20 或更高版本执行：
+
+```powershell
+npm ci
+npm run build:codex
+codex plugin marketplace add .
+codex plugin add workmate@workmate-local
+```
+
+安装后，在 Codex 打开业务仓库并新建会话，例如输入「用 WorkMate 分析 Foxhis 工单 #1234」。输出会包含相关代码、接口版本和字段、影响范围、修改建议和行为验收方案。需要落地修改时，在分析后明确确认。
+
+同一 Windows 用户可复用 WorkMate 已保存的 Foxhis 登录。也可为启动 Codex 的进程设置 `FOXHIS_USERNAME` 和 `FOXHIS_PASSWORD`，通过 `FOXHIS_BASE_URL` 可选指定 HTTPS 站点。请通过本地环境或凭据管理器提供密码。
+
+Codex 从安装缓存加载插件。修改源码后，重新运行 `npm run build:codex` 和 `codex plugin add workmate@workmate-local`，然后打开新会话。
+
+在仓库中运行 `npm run test:codex`，可使用模拟 Foxhis 响应验证 MCP 工具，无需真实账号。
+
+### 使用可点击的工单看板
+
+在仓库根目录运行 `npm run board`，打开终端打印的本地地址。连接 Foxhis 后，可搜索、筛选和打开工单、预览截图，并填写业务仓库路径后点击「用 Codex 分析」。分析结果会在工单详情中显示。按钮使用本机已登录的 Codex CLI，只读检查目标 Git 仓库。看板绑定本机回环地址，表单输入的 Foxhis 凭据只保留在服务进程内。
+
+Windows 桌面的「WorkMate 工单看板」快捷方式可直接打开固定地址 `http://127.0.0.1:62115/`，并在需要时启动已构建的看板服务。安装插件后也可以从 Codex 的 WorkMate 插件详情中打开「网站」链接。看板进程重启后，如已保存的登录不可用，需在页面重新连接 Foxhis。
+
+#### 更改本地报告目录
+
+Windows 默认把报告保存到 `D:\WorkMate\reports`。需要其他位置时，可在启动看板前给进程设置绝对路径，例如在 PowerShell 执行 `$env:WORKMATE_REPORTS_DIR = 'D:\WorkMate\reports'`，然后运行 `npm run board`。如果看板已在运行，需要先关闭原服务。配置只影响分析报告。要带上历史记录，先关闭服务并把旧目录 `%USERPROFILE%\.workmate\board-reports` 下的 JSON 文件复制到新目录，再按新配置启动。
+
+#### 从分析报告继续修改
+
+分析完成后，点「按此报告修改」。确认目标仓库后，可填写本次修改要求并提交。已有持久会话时继续使用同一会话，旧报告会作为首次修改的上下文。看板每次记录补充要求、变更文件、修改结果和 Codex 会话入口，最新记录在最上面。

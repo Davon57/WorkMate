@@ -9,7 +9,7 @@
 import { createElement, useLayoutEffect, useSyncExternalStore } from "react";
 
 export const name = "agent-console";
-export const inject = ["slots"];
+export const inject = ["slots", "sessions"];
 
 let open = false;
 const listeners = new Set();
@@ -84,41 +84,22 @@ function WorkMateOverlay({ sessionId } = {}) {
     const overlay = document.querySelector(".agent-console_overlay");
     if (!(overlay instanceof HTMLElement)) return;
 
-    // The shell overlay is a portal and does not participate in the host layout.
-    // Briefly hide it to locate the real conversation surface underneath, then
-    // dock that surface on the right so its own responsive layout is recalculated.
-    const previousVisibility = overlay.style.visibility;
-    overlay.style.visibility = "hidden";
-    const probe = document.elementFromPoint(window.innerWidth - 24, Math.round(window.innerHeight / 2));
-    overlay.style.visibility = previousVisibility;
-
-    let hostMain = probe instanceof HTMLElement ? probe.closest("main, [role='main']") : null;
-    if (!(hostMain instanceof HTMLElement) || hostMain.contains(overlay)) {
-      hostMain = null;
-      let candidate = probe instanceof HTMLElement ? probe : null;
-      while (candidate && candidate !== document.body) {
-        const rect = candidate.getBoundingClientRect();
-        if (
-          !candidate.contains(overlay) &&
-          candidate.children.length > 0 &&
-          rect.right >= window.innerWidth - 2 &&
-          rect.width >= 400 &&
-          rect.height >= window.innerHeight * 0.75
-        ) {
-          hostMain = candidate;
-          break;
-        }
-        candidate = candidate.parentElement;
-      }
-    }
-
+    // shell.overlay is a stable direct child of Harness AppFrame. Its sibling
+    // order is sidebar | conversation | details | overlay. Dock the persistent
+    // conversation column itself, not a session-specific descendant that gets
+    // replaced whenever ctx.sessions.open() switches the active session.
+    const overlayLayer = overlay.closest("[data-shell-overlay]");
+    const frame = overlayLayer?.parentElement;
+    const hostMain = frame?.children.item(1);
     if (!(hostMain instanceof HTMLElement)) return;
     const originalStyle = hostMain.getAttribute("style");
     hostMain.dataset.agentConsoleConversation = "true";
     hostMain.style.setProperty("position", "fixed", "important");
     hostMain.style.setProperty("inset", "0 0 0 auto", "important");
     hostMain.style.setProperty("width", window.innerWidth <= 1400 ? "360px" : "clamp(400px, 30vw, 560px)", "important");
+    hostMain.style.setProperty("height", "100vh", "important");
     hostMain.style.setProperty("min-width", "0", "important");
+    hostMain.style.setProperty("background", "var(--dsw-alias-bg-base, #fff)", "important");
     hostMain.style.setProperty("z-index", "89", "important");
 
     return () => {
@@ -175,6 +156,28 @@ export function apply(ctx) {
     document.head.appendChild(style);
     return () => style.remove();
   }, "agent-console: styles");
+
+  ctx.effect(() => {
+    let disposed = false;
+    const onMessage = async (event) => {
+      if (event.origin !== window.location.origin || event.data?.type !== "workmate:open-session") return;
+      const sessionId = event.data.sessionId;
+      if (typeof sessionId !== "string" || !sessionId) return;
+      for (let attempt = 0; attempt < 50 && !disposed; attempt += 1) {
+        if (ctx.sessions.list.getSnapshot().byId[sessionId]) {
+          ctx.sessions.open(sessionId);
+          return;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      }
+      console.warn(`[WorkMate] Harness session did not appear in the client list: ${sessionId}`);
+    };
+    window.addEventListener("message", onMessage);
+    return () => {
+      disposed = true;
+      window.removeEventListener("message", onMessage);
+    };
+  }, "agent-console: open analysis session");
 
   ctx.slots.inject("shell.overlay", () => ctx.slots.register({
     name: "shell.overlay",

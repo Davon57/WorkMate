@@ -1,0 +1,18 @@
+{
+  "name": "workmate",
+  "version": "0.1.0",
+  "description": "Analyze Foxhis work items against the current repository and verify interface contracts.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "requires_local_executor": true,
+  "interface": {
+    "displayName": "WorkMate",
+    "websiteURL": "http://127.0.0.1:62115/",
+    "shortDescription": "Foxhis 工单影响分析",
+    "longDescription": "从 Codex 查询 Foxhis 工单和接口定义，并结合当前仓库给出影响分析与验证方案。",
+    "defaultPrompt": [
+      "用 WorkMate 分析 Foxhis 工单",
+      "列出我的 Foxhis 工单"
+    ]
+  }
+}

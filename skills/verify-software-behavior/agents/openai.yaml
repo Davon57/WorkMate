@@ -1,0 +1,4 @@
+interface:
+  display_name: "软件行为验证"
+  short_description: "发现项目测试能力，补充行为回归测试并生成证据报告"
+  default_prompt: "使用 $verify-software-behavior 发现当前代码仓库的测试体系，验证需求行为，并避免让测试绑定内部实现。"
